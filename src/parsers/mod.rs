@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v1";
+pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v2";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParseOptions {
@@ -274,6 +274,9 @@ pub fn strip_injected_system_blocks(raw: &str) -> String {
     const TAGS: &[&str] = &[
         "system-reminder",
         "system_reminder",
+        "system-notice",
+        "system_notice",
+        "attachment",
         "local-command-caveat",
         "local-command-stdout",
         "command-name",

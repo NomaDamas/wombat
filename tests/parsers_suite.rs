@@ -375,7 +375,7 @@ fn pi_and_omp_parsers_filter_temp_faux_and_subagents_and_strip_reminders() {
             json!({"type": "message", "timestamp": "2026-10-13T05:59:21.000Z", "message": {
                 "role": "user",
                 "attribution": "user",
-                "content": [{"type": "text", "text": "<system-reminder>Today: 2026-10-13</system-reminder>한국어 BM25 토크나이저 교체를 진행해줘"}]
+                "content": [{"type": "text", "text": "<system-reminder>Today: 2026-10-13</system-reminder>한국어 BM25 토크나이저 교체를 진행해줘\n<attachment>\nDUMPED_CRASH_LOG_ATTACHMENT_SECRET\n</attachment>\n<system-notice>\nSUBAGENT_TASK_NOTICE_SECRET\n</system-notice>"}]
             }}),
             json!({"type": "message", "timestamp": "2026-10-13T05:59:25.000Z", "message": {
                 "role": "developer",
@@ -421,6 +421,8 @@ fn pi_and_omp_parsers_filter_temp_faux_and_subagents_and_strip_reminders() {
         "DIFF_HUNK_SECRET",
         "OMP_TOOL_RESULT_SECRET",
         "Today: 2026-10-13",
+        "DUMPED_CRASH_LOG_ATTACHMENT_SECRET",
+        "SUBAGENT_TASK_NOTICE_SECRET",
     ] {
         assert!(!mirror.content.contains(secret), "leaked {secret}");
     }

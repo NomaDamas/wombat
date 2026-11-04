@@ -159,6 +159,12 @@ pub fn parse_file(path: &Path, agent: AgentKind, opts: &ParseOptions) -> Result<
                 if let Some(t) = v.get("timestamp").and_then(Value::as_str) {
                     started_at = Some(t.to_string());
                 }
+                if title.is_none()
+                    && let Some(t) = v.get("title").and_then(Value::as_str)
+                    && !t.trim().is_empty()
+                {
+                    title = Some(t.trim().to_string());
+                }
             }
             "title" | "title_change" => {
                 if let Some(t) = v.get("title").and_then(Value::as_str)
@@ -292,7 +298,7 @@ fn is_subagent_path(path: &Path) -> bool {
     else {
         return false;
     };
-    grand_name.starts_with("--") && !parent_name.starts_with("--") && parent_name.contains('_')
+    grand_name.starts_with('-') && !parent_name.starts_with('-') && parent_name.contains('_')
 }
 
 fn derive_pi_id(path: &Path) -> String {
