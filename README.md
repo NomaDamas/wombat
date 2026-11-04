@@ -15,9 +15,19 @@ Designed as an external CLI datasource for **AutoRAG**.
 3. **Incremental materialization + indexing (`src/minsync.rs`, `src/engine.rs`)** — `minsync stage` tracks per-source fingerprints so unchanged sessions are not re-parsed; `minsync sync` incrementally updates only new/modified chunks across both SPLADE and dense indexes. Every `minsync` interaction uses the external binary (`minsync init|stage|sync|query|status`); the `minsync` crate is never linked.
 4. **Session & full-trace navigation (`src/catalog.rs`, `wombat show`, `wombat trace`)** — every rendered turn records its exact source pointer (`[src:L134]` for JSONL/zstd lines or `[src:id:<msg_id>]` for SQLite stores), allowing an agent to jump from any retrieved chunk straight to the surrounding turns or the raw underlying session trace (including tool calls and diffs).
 
+## Install
+
+```bash
+cargo install wombat-sessions        # installs the `wombat` binary
+# or download a prebuilt binary from https://github.com/NomaDamas/wombat/releases
+```
+
+The crates.io package is `wombat-sessions` (the `wombat` name is taken by an unrelated crate); the
+executable is `wombat`.
+
 ## Requirements
 
-- Rust `1.88+`
+- Rust `1.88+` (only to build from source)
 - `minsync >= 0.6.0` on `PATH` (or `--minsync-bin <path>` / `WOMBAT_MINSYNC_BIN`)
 
 ## CLI Usage
@@ -60,3 +70,19 @@ wombat chunk parent <chunk_id> --json
 | `WOMBAT_EMBEDDER` | MinSync dense embedder id (`native:Qwen/Qwen3-Embedding-0.6B`, or `none` for SPLADE-only) |
 | `WOMBAT_EMBED_BASE_URL` | Optional shared loopback embedding endpoint (`minsync serve`) |
 | `WOMBAT_CHUNKER` | Chunker id (`auto` selects `line-cdc` on `minsync >= 0.7`, `cdc` on `0.6.x`) |
+
+## Releasing
+
+Releases are cut by pushing a version tag; `.github/workflows/release.yml` does the rest:
+
+1. Bump `version` in `Cargo.toml` (and `Cargo.lock` via `cargo check`), merge to `main`.
+2. `git tag v0.2.0 && git push origin v0.2.0`. The tag must equal the `Cargo.toml` version or the run fails.
+3. The workflow runs the tests and a `cargo publish --dry-run`, builds `wombat` for Linux x86_64 and
+   macOS arm64, creates the GitHub Release with the tarballs and `.sha256` files, and publishes
+   `wombat-sessions` to crates.io. A version already on crates.io is skipped, so a failed run can be re-run.
+   Intel macOS has no prebuilt binary; use `cargo install wombat-sessions`.
+
+crates.io publishing uses [Trusted Publishing](https://crates.io/docs/trusted-publishing) (GitHub OIDC),
+so no `CARGO_REGISTRY_TOKEN` secret is stored. One-time setup (crates.io -> `wombat-sessions` ->
+Settings -> Trusted Publishing): repository `NomaDamas/wombat`, workflow `release.yml`, environment
+`crates-io`. Create the `crates-io` environment in the GitHub repo settings as well.

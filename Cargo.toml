@@ -1,12 +1,24 @@
 [package]
-name = "wombat"
+name = "wombat-sessions"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Parse coding-agent session logs into a prefix-stable mirror indexed by MinSync"
+description = "Search your coding-agent session history (Codex, Claude Code, OpenCode, pi, omp) with MinSync SPLADE + dense retrieval"
 license = "MIT"
 repository = "https://github.com/NomaDamas/wombat"
+homepage = "https://github.com/NomaDamas/wombat"
 readme = "README.md"
+keywords = ["coding-agent", "session-search", "minsync", "splade", "rag"]
+categories = ["command-line-utilities", "text-processing"]
+exclude = [".github/", "AGENTS.md", "tests/fixtures/"]
+
+[lib]
+name = "wombat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wombat"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
