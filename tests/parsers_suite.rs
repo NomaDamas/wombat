@@ -1,0 +1,773 @@
+use rusqlite::{Connection, params};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::io::Write;
+use std::path::Path;
+use tempfile::TempDir;
+use wombat::mirror::render_mirror;
+use wombat::model::{AgentKind, Role, SourceOffset};
+use wombat::parsers::{
+    ParseOptions, ParseOutcome, SourceRoots, discover_all, extract_raw_trace, parse_candidate,
+};
+
+fn write_zst_lines(path: &Path, lines: &[serde_json::Value]) {
+    let file = std::fs::File::create(path).unwrap();
+    let mut enc = zstd::stream::write::Encoder::new(file, 3).unwrap();
+    for line in lines {
+        let s = serde_json::to_string(line).unwrap();
+        enc.write_all(s.as_bytes()).unwrap();
+        enc.write_all(b"\n").unwrap();
+    }
+    enc.finish().unwrap();
+}
+
+fn write_jsonl_lines(path: &Path, lines: &[serde_json::Value]) {
+    let mut out = String::new();
+    for l in lines {
+        out.push_str(&serde_json::to_string(l).unwrap());
+        out.push('\n');
+    }
+    std::fs::write(path, out).unwrap();
+}
+
+fn encode_pb_bytes_field(field_num: u32, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_uvarint(&mut out, ((field_num as u64) << 3) | 2);
+    push_uvarint(&mut out, payload.len() as u64);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn encode_pb_varint_field(field_num: u32, val: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_uvarint(&mut out, (field_num as u64) << 3);
+    push_uvarint(&mut out, val);
+    out
+}
+
+fn push_uvarint(out: &mut Vec<u8>, mut x: u64) {
+    while x >= 0x80 {
+        out.push(((x as u8) & 0x7f) | 0x80);
+        x >>= 7;
+    }
+    out.push(x as u8);
+}
+
+#[test]
+fn codex_zst_parser_strips_system_reasoning_and_tools_and_keeps_line_offsets() {
+    let dir = TempDir::new().unwrap();
+    let zst_path = dir
+        .path()
+        .join("rollout-2026-10-15T21-58-01-01a13fa4-1b1a-7c03-9fcd-cce611b321ca.jsonl.zst");
+
+    let lines = vec![
+        json!({
+            "timestamp": "2026-10-15T12:58:01.885Z",
+            "type": "session_meta",
+            "payload": {
+                "session_id": "01a13fa4-1b1a-7c03-9fcd-cce611b321ca",
+                "timestamp": "2026-10-15T12:58:01.885Z",
+                "cwd": "/Users/jeffrey/Projects/banana",
+                "thread_source": "user"
+            }
+        }),
+        json!({
+            "timestamp": "2026-10-15T12:58:20.512Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "<app-context>SECRET_DEVELOPER_PROMPT</app-context>"}]
+            }
+        }),
+        json!({
+            "timestamp": "2026-10-15T12:58:20.512Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>NOISE_AGENTS_MD</INSTRUCTIONS>"},
+                    {"type": "input_text", "text": "<environment_context><cwd>/Users/jeffrey/Projects/banana</cwd></environment_context>"}
+                ]
+            }
+        }),
+        json!({
+            "timestamp": "2026-10-15T12:58:20.517Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "1Password Chrome CSV 마이그레이션 진행해줘"}]
+            }
+        }),
+        json!({
+            "timestamp": "2026-10-15T12:58:30.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "SECRET_THINKING_TRACE"}]
+            }
+        }),
+        json!({
+            "timestamp": "2026-10-15T12:58:35.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec_command",
+                "input": "op account list --SECRET_TOOL_CALL"
+            }
+        }),
+        json!({
+            "timestamp": "2026-10-15T12:58:36.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "output": "SECRET_TOOL_OUTPUT_DUMP_DIFF_PATCH"
+            }
+        }),
+        json!({
+            "timestamp": "2026-10-15T12:59:14.192Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "Chrome CSV 514개 항목을 순차 등록하겠습니다."}]
+            }
+        }),
+    ];
+    write_zst_lines(&zst_path, &lines);
+
+    let roots = SourceRoots {
+        codex: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let candidates = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(candidates.len(), 1);
+
+    let ParseOutcome::Session(session) = parse_candidate(&candidates[0], &opts).unwrap() else {
+        panic!("expected parsed codex session");
+    };
+    assert_eq!(session.agent, AgentKind::Codex);
+    assert_eq!(session.session_id, "01a13fa4-1b1a-7c03-9fcd-cce611b321ca");
+    assert_eq!(session.turns.len(), 2);
+    assert_eq!(session.turns[0].role, Role::User);
+    assert_eq!(
+        session.turns[0].text,
+        "1Password Chrome CSV 마이그레이션 진행해줘"
+    );
+    assert_eq!(
+        session.turns[0].source_offset,
+        SourceOffset::Lines {
+            start_line: 4,
+            end_line: 4
+        }
+    );
+    assert_eq!(session.turns[1].role, Role::Assistant);
+    assert_eq!(
+        session.turns[1].source_offset,
+        SourceOffset::Lines {
+            start_line: 8,
+            end_line: 8
+        }
+    );
+
+    let mirror = render_mirror(&session);
+    for forbidden in [
+        "SECRET_DEVELOPER_PROMPT",
+        "NOISE_AGENTS_MD",
+        "SECRET_THINKING_TRACE",
+        "SECRET_TOOL_CALL",
+        "SECRET_TOOL_OUTPUT_DUMP",
+    ] {
+        assert!(
+            !mirror.content.contains(forbidden),
+            "mirror leaked {forbidden}"
+        );
+    }
+
+    // Verify full trace extraction from zstd file!
+    let raw_trace = extract_raw_trace(
+        AgentKind::Codex,
+        &session.source_path,
+        &session.turns[1].source_offset,
+        2,
+    )
+    .unwrap();
+    assert!(raw_trace.contains("SECRET_TOOL_OUTPUT_DUMP_DIFF_PATCH"));
+    assert!(raw_trace.contains("Chrome CSV 514개"));
+
+    // Verify Codex subagent skipped by default.
+    let sub_path = dir.path().join("rollout-subagent.jsonl");
+    write_jsonl_lines(
+        &sub_path,
+        &[
+            json!({
+                "type": "session_meta",
+                "payload": {
+                    "session_id": "sub-1",
+                    "cwd": "/Users/jeffrey/Projects/banana",
+                    "thread_source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent-1"}}}
+                }
+            }),
+            json!({
+                "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "subtask"}]}
+            }),
+        ],
+    );
+    let sub_cand = wombat::parsers::codex::discover(dir.path())
+        .unwrap()
+        .into_iter()
+        .find(|c| c.fs_path == sub_path)
+        .unwrap();
+    assert!(matches!(
+        parse_candidate(&sub_cand, &opts).unwrap(),
+        ParseOutcome::Skipped { reason: "subagent" }
+    ));
+}
+
+#[test]
+fn claude_code_parser_strips_commands_thinking_tools_and_snapshots() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("-Volumes-SSD1-1-wombat");
+    let sub_dir = proj.join("sess-1").join("subagents");
+    std::fs::create_dir_all(&sub_dir).unwrap();
+
+    // Subagent file in `subagents/` must be ignored during discovery.
+    write_jsonl_lines(
+        &sub_dir.join("agent-sub.jsonl"),
+        &[json!({
+            "type": "user",
+            "sessionId": "sub-1",
+            "message": {"role": "user", "content": "subagent task"}
+        })],
+    );
+
+    let main_file = proj.join("e46ba661-b6eb-4ad4-acb6-1e8b56a0d143.jsonl");
+    write_jsonl_lines(
+        &main_file,
+        &[
+            json!({
+                "type": "user",
+                "isMeta": true,
+                "sessionId": "e46ba661-b6eb-4ad4-acb6-1e8b56a0d143",
+                "cwd": "/Volumes/SSD1/1/wombat",
+                "timestamp": "2026-07-04T05:59:20.000Z",
+                "message": {"role": "user", "content": "<local-command-caveat>NOISE_CAVEAT</local-command-caveat>"}
+            }),
+            json!({
+                "type": "user",
+                "sessionId": "e46ba661-b6eb-4ad4-acb6-1e8b56a0d143",
+                "timestamp": "2026-07-04T05:59:21.000Z",
+                "message": {"role": "user", "content": "<command-name>/login</command-name>"}
+            }),
+            json!({
+                "type": "user",
+                "sessionId": "e46ba661-b6eb-4ad4-acb6-1e8b56a0d143",
+                "timestamp": "2026-07-04T05:59:29.158Z",
+                "message": {"role": "user", "content": "마이크로서비스 통합 아키텍처를 정리해줘"}
+            }),
+            // Duplicate queued user echo at identical timestamp -> deduped
+            json!({
+                "type": "user",
+                "sessionId": "e46ba661-b6eb-4ad4-acb6-1e8b56a0d143",
+                "timestamp": "2026-07-04T05:59:29.158Z",
+                "message": {"role": "user", "content": "마이크로서비스 통합 아키텍처를 정리해줘"}
+            }),
+            json!({
+                "type": "file-history-snapshot",
+                "snapshot": {"trackedFileBackups": {"src/main.rs": "DIFF_SNAPSHOT_NOISE"}}
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-07-04T06:00:00.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "CLAUDE_INTERNAL_THINKING"},
+                        {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls -la"}},
+                        {"type": "text", "text": "총 7개 서비스의 API 경계를 먼저 정의했습니다."}
+                    ]
+                }
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-07-04T06:00:05.000Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "CLAUDE_TOOL_RESULT_NOISE"}]
+                }
+            }),
+            json!({
+                "type": "ai-title",
+                "aiTitle": "K-Manus 마이크로서비스 통합"
+            }),
+        ],
+    );
+
+    let opts = ParseOptions::default();
+    let cands = wombat::parsers::claude_code::discover(dir.path(), &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected claude session");
+    };
+    assert_eq!(s.title.as_deref(), Some("K-Manus 마이크로서비스 통합"));
+    assert_eq!(s.turns.len(), 2);
+    assert_eq!(s.turns[0].text, "마이크로서비스 통합 아키텍처를 정리해줘");
+    assert_eq!(
+        s.turns[1].text,
+        "총 7개 서비스의 API 경계를 먼저 정의했습니다."
+    );
+    let rendered = render_mirror(&s);
+    assert!(!rendered.content.contains("CLAUDE_INTERNAL_THINKING"));
+    assert!(!rendered.content.contains("CLAUDE_TOOL_RESULT_NOISE"));
+    assert!(!rendered.content.contains("DIFF_SNAPSHOT_NOISE"));
+    assert!(!rendered.content.contains("K-Manus 마이크로서비스 통합"));
+}
+
+#[test]
+fn pi_and_omp_parsers_filter_temp_faux_and_subagents_and_strip_reminders() {
+    let dir = TempDir::new().unwrap();
+    let real_proj = dir.path().join("--Volumes-SSD1-1-mailcrawl--");
+    let tmp_proj = dir.path().join("--tmp-autorag-qa-ws--");
+    let nested_sub = real_proj.join("2026-10-13T05-59-20-912Z_01a133d8");
+    std::fs::create_dir_all(&nested_sub).unwrap();
+    std::fs::create_dir_all(&tmp_proj).unwrap();
+
+    // Ephemeral `/tmp` session -> skipped during discovery
+    write_jsonl_lines(
+        &tmp_proj.join("2026-10-13_tmp12345.jsonl"),
+        &[
+            json!({"type": "session", "id": "tmp12345", "cwd": "/tmp/autorag-qa-ws"}),
+            json!({"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "ephemeral"}]}}),
+        ],
+    );
+
+    // Nested subagent -> skipped by default
+    write_jsonl_lines(
+        &nested_sub.join("Pr42Review.jsonl"),
+        &[
+            json!({"type": "session", "id": "sub99999", "cwd": "/Volumes/SSD1/1/mailcrawl"}),
+            json!({"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "review diff"}]}}),
+        ],
+    );
+
+    // Faux provider automation in real dir -> skipped during parse
+    write_jsonl_lines(
+        &real_proj.join("2026-10-13_faux0001.jsonl"),
+        &[
+            json!({"type": "session", "id": "faux0001", "cwd": "/Volumes/SSD1/1/mailcrawl"}),
+            json!({"type": "model_change", "provider": "faux", "modelId": "automations"}),
+            json!({"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "faux prompt"}]}}),
+        ],
+    );
+
+    // Real OMP user conversation with volatile title, developer rule violation, thinking, toolCall, toolResult
+    write_jsonl_lines(
+        &real_proj.join("2026-10-13T05-59-20-912Z_01a133d8.jsonl"),
+        &[
+            json!({"type": "title", "v": 1, "title": "Implement issue 41", "pad": "     "}),
+            json!({"type": "session", "version": 3, "id": "01a133d8", "timestamp": "2026-10-13T05:59:20.912Z", "cwd": "/Volumes/SSD1/1/mailcrawl"}),
+            json!({"type": "message", "timestamp": "2026-10-13T05:59:20.950Z", "message": {"role": "system", "content": "OMP_SYSTEM_PROMPT_SECRET"}}),
+            json!({"type": "message", "timestamp": "2026-10-13T05:59:21.000Z", "message": {
+                "role": "user",
+                "attribution": "user",
+                "content": [{"type": "text", "text": "<system-reminder>Today: 2026-10-13</system-reminder>한국어 BM25 토크나이저 교체를 진행해줘"}]
+            }}),
+            json!({"type": "message", "timestamp": "2026-10-13T05:59:25.000Z", "message": {
+                "role": "developer",
+                "attribution": "agent",
+                "content": [{"type": "text", "text": "<system-reminder>OMP_RULE_VIOLATION</system-reminder>"}]
+            }}),
+            json!({"type": "message", "timestamp": "2026-10-13T05:59:30.000Z", "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "OMP_THINKING_SECRET"},
+                    {"type": "toolCall", "id": "call_1", "name": "edit", "arguments": {"input": "DIFF_HUNK_SECRET"}},
+                    {"type": "text", "text": "Kiwi 형태소 분석기 기반으로 교체했습니다."}
+                ]
+            }}),
+            json!({"type": "message", "timestamp": "2026-10-13T05:59:31.000Z", "message": {
+                "role": "toolResult",
+                "content": [{"type": "text", "text": "OMP_TOOL_RESULT_SECRET"}]
+            }}),
+        ],
+    );
+
+    let opts = ParseOptions::default();
+    let cands = wombat::parsers::pi::discover(dir.path(), AgentKind::Omp, &opts).unwrap();
+    assert_eq!(cands.len(), 2); // faux + real; tmp & nested subagent skipped at discovery
+
+    let mut sessions = Vec::new();
+    for c in &cands {
+        if let ParseOutcome::Session(s) = parse_candidate(c, &opts).unwrap() {
+            sessions.push(s);
+        }
+    }
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    assert_eq!(s.session_id, "01a133d8");
+    assert_eq!(s.turns.len(), 2);
+    assert_eq!(s.turns[0].text, "한국어 BM25 토크나이저 교체를 진행해줘");
+    assert_eq!(s.turns[1].text, "Kiwi 형태소 분석기 기반으로 교체했습니다.");
+    let mirror = render_mirror(s);
+    for secret in [
+        "OMP_SYSTEM_PROMPT_SECRET",
+        "OMP_RULE_VIOLATION",
+        "OMP_THINKING_SECRET",
+        "DIFF_HUNK_SECRET",
+        "OMP_TOOL_RESULT_SECRET",
+        "Today: 2026-10-13",
+    ] {
+        assert!(!mirror.content.contains(secret), "leaked {secret}");
+    }
+}
+
+#[test]
+fn opencode_v1_v2_sqlite_and_legacy_json_parsers_work() {
+    let dir = TempDir::new().unwrap();
+
+    // 1. SQLite with both v2 (`session_v2` + `session_message`) and v1 (`session` + `message` + `part`)
+    let db_dir = dir.path().join("oc-sqlite");
+    std::fs::create_dir_all(&db_dir).unwrap();
+    let db_path = db_dir.join("opencode.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+            CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, seq INTEGER, type TEXT, time_created INTEGER, data TEXT);
+            ",
+        )
+        .unwrap();
+
+        // v1 session
+        conn.execute(
+            "INSERT INTO session VALUES ('ses_v1', NULL, '/Volumes/SSD1/1/wombat', 'OpenCode V1 Title', 1760000000000, 1760000050000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('msg_u1', 'ses_v1', 1760000001000, 1760000001000, ?1)",
+            params![
+                json!({"id": "msg_u1", "role": "user", "time": {"created": 1760000001000i64}})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO part VALUES ('prt_1', 'ses_v1', 'msg_u1', 1, 1, ?1)",
+            params![json!({"type": "text", "text": "OpenCode v1 질문입니다\n<!-- OMO_INTERNAL_INITIATOR -->"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO part VALUES ('prt_synth', 'ses_v1', 'msg_u1', 1, 1, ?1)",
+            params![
+                json!({"type": "text", "synthetic": true, "text": "SYNTHETIC_FILE_DUMP_SECRET"})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('msg_a1', 'ses_v1', 1760000002000, 1760000002000, ?1)",
+            params![
+                json!({"id": "msg_a1", "role": "assistant", "time": {"created": 1760000002000i64}})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO part VALUES ('prt_tool', 'ses_v1', 'msg_a1', 2, 2, ?1)",
+            params![
+                json!({"type": "tool", "tool": "bash", "state": {"output": "OC_TOOL_SECRET"}})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO part VALUES ('prt_2', 'ses_v1', 'msg_a1', 2, 2, ?1)",
+            params![json!({"type": "text", "text": "OpenCode v1 답변입니다."}).to_string()],
+        )
+        .unwrap();
+
+        // v2 session + subagent child (child should be skipped)
+        conn.execute(
+            "INSERT INTO session_v2 VALUES ('ses_v2', NULL, '/Volumes/SSD1/1/AutoRAG', 'OpenCode V2 Title', 1760000100000, 1760000150000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2 VALUES ('ses_v2_sub', 'ses_v2', '/Volumes/SSD1/1/AutoRAG', 'Child', 1760000100000, 1760000150000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message VALUES ('m2_u', 'ses_v2', 1, 'user', 1760000101000, ?1)",
+            params![json!({"text": "OpenCode v2 SQLite 스키마 검증"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message VALUES ('m2_a', 'ses_v2', 2, 'assistant', 1760000102000, ?1)",
+            params![json!({
+                "content": [
+                    {"type": "reasoning", "text": "OC_V2_REASONING_SECRET"},
+                    {"type": "tool", "name": "edit", "state": {"input": "OC_V2_EDIT_DIFF"}},
+                    {"type": "text", "text": "session_v2 테이블에서 대화만 추출했습니다."}
+                ]
+            }).to_string()],
+        )
+        .unwrap();
+    }
+
+    let opts = ParseOptions::default();
+    let cands = wombat::parsers::opencode::discover(&db_dir, &opts).unwrap();
+    assert_eq!(cands.len(), 2);
+    for c in &cands {
+        let ParseOutcome::Session(s) = parse_candidate(c, &opts).unwrap() else {
+            panic!("expected opencode session for {:?}", c.inner_id);
+        };
+        assert_eq!(s.turns.len(), 2);
+        let mirror = render_mirror(&s);
+        assert!(!mirror.content.contains("SYNTHETIC_FILE_DUMP_SECRET"));
+        assert!(!mirror.content.contains("OC_TOOL_SECRET"));
+        assert!(!mirror.content.contains("OC_V2_REASONING_SECRET"));
+        assert!(!mirror.content.contains("OMO_INTERNAL_INITIATOR"));
+
+        // Verify SQLite item trace lookup!
+        let trace = extract_raw_trace(
+            AgentKind::OpenCode,
+            &s.source_path,
+            &s.turns[1].source_offset,
+            0,
+        )
+        .unwrap();
+        assert!(!trace.is_empty());
+    }
+
+    // 2. Legacy JSON file storage
+    let legacy_root = dir.path().join("oc-legacy").join("storage");
+    std::fs::create_dir_all(legacy_root.join("session/proj1")).unwrap();
+    std::fs::create_dir_all(legacy_root.join("message/ses_leg")).unwrap();
+    std::fs::create_dir_all(legacy_root.join("part/msg_lu")).unwrap();
+    std::fs::write(
+        legacy_root.join("session/proj1/ses_leg.json"),
+        json!({"id": "ses_leg", "directory": "/Volumes/SSD1/1/katok", "time": {"created": 1760000200000i64}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        legacy_root.join("message/ses_leg/msg_lu.json"),
+        json!({"id": "msg_lu", "role": "user", "time": {"created": 1760000201000i64}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        legacy_root.join("part/msg_lu/001.json"),
+        json!({"type": "text", "text": "레거시 JSON 스토리지도 지원하나요?"}).to_string(),
+    )
+    .unwrap();
+
+    let leg_cands =
+        wombat::parsers::opencode::discover(&dir.path().join("oc-legacy"), &opts).unwrap();
+    assert_eq!(leg_cands.len(), 1);
+    let ParseOutcome::Session(leg_s) = parse_candidate(&leg_cands[0], &opts).unwrap() else {
+        panic!("expected legacy opencode session");
+    };
+    assert_eq!(leg_s.turns[0].text, "레거시 JSON 스토리지도 지원하나요?");
+}
+
+#[test]
+fn cursor_cli_store_db_and_ide_vscdb_parsers_strip_context_and_tools() {
+    let dir = TempDir::new().unwrap();
+
+    // 1. Cursor CLI `chats/<md5>/<chat-id>/store.db` + `meta.json`
+    let chat_dir = dir.path().join("cli-root/chats/99aa88bb/chat-uuid-777");
+    std::fs::create_dir_all(&chat_dir).unwrap();
+    std::fs::write(
+        chat_dir.join("meta.json"),
+        json!({
+            "title": "Cursor CLI Blob Test",
+            "cwd": "/Volumes/SSD1/1/wombat",
+            "createdAtMs": 1761000000000i64,
+            "updatedAtMs": 1761000010000i64,
+            "isSubagent": false
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let store_path = chat_dir.join("store.db");
+    {
+        let conn = Connection::open(&store_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);",
+        )
+        .unwrap();
+
+        let user_blob = json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "<user_info>CURSOR_ENV_SECRET</user_info>\n<user_query>Cursor protobuf 트리 파싱 테스트</user_query>"}
+            ]
+        })
+        .to_string()
+        .into_bytes();
+        let user_digest = Sha256::digest(&user_blob);
+        let user_hex = hex::encode(user_digest);
+
+        let asst_blob = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": "CURSOR_REASONING_SECRET"},
+                {"type": "tool-call", "toolName": "Shell", "args": {"command": "CURSOR_SHELL_SECRET"}},
+                {"type": "text", "text": "store.db의 SHA-256 블롭에서 대화만 복원했습니다."}
+            ]
+        })
+        .to_string()
+        .into_bytes();
+        let asst_digest = Sha256::digest(&asst_blob);
+        let asst_hex = hex::encode(asst_digest);
+
+        let mut root_pb = Vec::new();
+        root_pb.extend_from_slice(&encode_pb_bytes_field(1, &user_digest));
+        root_pb.extend_from_slice(&encode_pb_bytes_field(1, &asst_digest));
+        root_pb.extend_from_slice(&encode_pb_varint_field(26, 1761000000000));
+        let root_digest = Sha256::digest(&root_pb);
+        let root_hex = hex::encode(root_digest);
+
+        let meta_hex = hex::encode(
+            json!({
+                "agentId": "chat-uuid-777",
+                "name": "Cursor CLI Blob Test",
+                "createdAt": 1761000000000i64,
+                "latestRootBlobId": root_hex
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        conn.execute("INSERT INTO meta VALUES ('0', ?1)", params![meta_hex])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO blobs VALUES (?1, ?2)",
+            params![user_hex, user_blob],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs VALUES (?1, ?2)",
+            params![asst_hex, asst_blob],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO blobs VALUES (?1, ?2)",
+            params![root_hex, root_pb],
+        )
+        .unwrap();
+    }
+
+    // 2. Cursor IDE `globalStorage/state.vscdb`
+    let ide_dir = dir.path().join("ide-user/globalStorage");
+    std::fs::create_dir_all(&ide_dir).unwrap();
+    let vscdb_path = ide_dir.join("state.vscdb");
+    {
+        let conn = Connection::open(&vscdb_path).unwrap();
+        conn.execute(
+            "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES ('composerData:comp-42', ?1)",
+            params![
+                json!({
+                    "composerId": "comp-42",
+                    "name": "Fix cache invalidation",
+                    "createdAt": 1762000000000i64,
+                    "lastUpdatedAt": 1762000009000i64,
+                    "fullConversationHeadersOnly": [
+                        {"bubbleId": "b1", "type": 1},
+                        {"bubbleId": "b2", "type": 2},
+                        {"bubbleId": "b3", "type": 2}
+                    ]
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-42:b1', ?1)",
+            params![
+                json!({
+                    "type": 1,
+                    "text": "캐시 무효화 버그 원인이 뭐야?",
+                    "workspaceProjectDir": "/Volumes/SSD1/1/AutoRAG"
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+        // Tool-only bubble with no user-facing text -> skipped!
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-42:b2', ?1)",
+            params![
+                json!({
+                    "type": 2,
+                    "text": "",
+                    "allThinkingBlocks": [{"text": "IDE_THINK_SECRET"}],
+                    "toolFormerData": {"name": "read_file", "rawArgs": "IDE_TOOL_SECRET"}
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES ('bubbleId:comp-42:b3', ?1)",
+            params![
+                json!({
+                    "type": 2,
+                    "text": "캐시 키에서 로케일 필드가 빠져 있었습니다."
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    let roots = SourceRoots {
+        cursor: vec![dir.path().join("cli-root"), dir.path().join("ide-user")],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 2);
+
+    for c in &cands {
+        let ParseOutcome::Session(s) = parse_candidate(c, &opts).unwrap() else {
+            panic!("expected cursor session");
+        };
+        assert_eq!(s.turns.len(), 2);
+        let mirror = render_mirror(&s);
+        for secret in [
+            "CURSOR_ENV_SECRET",
+            "CURSOR_REASONING_SECRET",
+            "CURSOR_SHELL_SECRET",
+            "IDE_THINK_SECRET",
+            "IDE_TOOL_SECRET",
+        ] {
+            assert!(!mirror.content.contains(secret), "leaked {secret}");
+        }
+        let raw = extract_raw_trace(
+            AgentKind::Cursor,
+            &s.source_path,
+            &s.turns[1].source_offset,
+            0,
+        )
+        .unwrap();
+        assert!(!raw.is_empty());
+    }
+}
