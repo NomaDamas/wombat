@@ -254,8 +254,12 @@ pub fn is_ephemeral_temp_cwd(cwd: &str) -> bool {
         || is_autorag_workspace(p)
 }
 
-/// AutoRAG runs its own librarian agents in `<home>/.autorag/workspace`; those sessions are
-/// machine-issued prompts, not conversations with the user.
+/// AutoRAG runs its own librarian agents in `<home>/.autorag/workspace` and its benchmark
+/// harness in `<repo>/.bench/ws-*` (or `.bench-ws-*`); those sessions are machine-issued
+/// prompts, not conversations with the user.
 fn is_autorag_workspace(p: &str) -> bool {
-    p.ends_with("/.autorag/workspace") || p.contains("/.autorag/workspace/")
+    p.ends_with("/.autorag/workspace")
+        || p.contains("/.autorag/workspace/")
+        || p.contains("/.bench/ws-")
+        || p.contains("/.bench-ws-")
 }

@@ -18,6 +18,8 @@ fn automation_workspaces_are_ephemeral_but_real_projects_are_not() {
         "/private/var/folders/ab/T/run",
         "/Users/jeffrey/.autorag/workspace",
         "/Users/jeffrey/.autorag/workspace/sub",
+        "/Volumes/SSD1/4/AutoRAG/.bench/ws-noemit",
+        "/Volumes/SSD1/4/AutoRAG/.bench-ws-main",
     ] {
         assert!(is_ephemeral_temp_cwd(c), "{c} should be ephemeral");
     }
@@ -25,6 +27,7 @@ fn automation_workspaces_are_ephemeral_but_real_projects_are_not() {
         "/Volumes/SSD1/1/wombat",
         "/Users/jeffrey/.autorag-notes",
         "/Users/jeffrey/Projects/autorag/workspace",
+        "/Users/jeffrey/Projects/workbench/notes",
     ] {
         assert!(!is_ephemeral_temp_cwd(c), "{c} should be kept");
     }
