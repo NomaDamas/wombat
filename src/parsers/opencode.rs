@@ -449,7 +449,10 @@ fn parse_sqlite_v1(
             .or(row_created);
         let ts = ts_ms.and_then(ms_to_rfc3339);
 
-        let text = collect_oc_text_parts(parts_by_msg.get(&mid).map(Vec::as_slice).unwrap_or(&[]));
+        let text = collect_oc_text_parts(
+            parts_by_msg.get(&mid).map(Vec::as_slice).unwrap_or(&[]),
+            role,
+        );
         push_turn_dedup(
             &mut turns,
             role,
@@ -570,7 +573,7 @@ fn parse_json_storage_session(
                 pvals.push(pv);
             }
         }
-        let text = collect_oc_text_parts(&pvals);
+        let text = collect_oc_text_parts(&pvals, role);
         push_turn_dedup(
             &mut turns,
             role,
@@ -600,7 +603,21 @@ fn parse_json_storage_session(
     }))
 }
 
-fn collect_oc_text_parts(parts: &[Value]) -> String {
+/// `opencode run "<prompt>"` stores the user's text part JSON-encoded (`"\"prompt\""`), so a
+/// user text that is a complete JSON string literal is unwrapped. Assistant text is never touched.
+fn unwrap_json_string_literal(text: &str) -> String {
+    let t = text.trim();
+    if t.len() >= 2
+        && t.starts_with('"')
+        && t.ends_with('"')
+        && let Ok(inner) = serde_json::from_str::<String>(t)
+    {
+        return inner;
+    }
+    text.to_string()
+}
+
+fn collect_oc_text_parts(parts: &[Value], role: Role) -> String {
     let mut out = Vec::new();
     for p in parts {
         if p.get("type").and_then(Value::as_str) != Some("text") {
@@ -612,7 +629,12 @@ fn collect_oc_text_parts(parts: &[Value]) -> String {
             continue;
         }
         if let Some(t) = p.get("text").and_then(Value::as_str) {
-            let cleaned = strip_injected_system_blocks(t);
+            let raw = if role == Role::User {
+                unwrap_json_string_literal(t)
+            } else {
+                t.to_string()
+            };
+            let cleaned = strip_injected_system_blocks(&raw);
             if !cleaned.is_empty() {
                 out.push(cleaned);
             }
@@ -644,23 +666,7 @@ pub fn extract_raw_item(source_path: &str, item_id: &str) -> Result<String> {
             return Ok(data);
         }
         if has_table(conn, "message") {
-            let msg: String = conn
-                .query_row(
-                    "SELECT COALESCE(data, '') FROM message WHERE session_id = ?1 AND id = ?2",
-                    params![sid, item_id],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default();
-            let mut stmt = conn.prepare(
-                "SELECT COALESCE(data, '') FROM part WHERE session_id = ?1 AND message_id = ?2 ORDER BY rowid ASC",
-            )?;
-            let parts: Vec<String> = stmt
-                .query_map(params![sid, item_id], |r| r.get(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            return Ok(serde_json::to_string_pretty(&serde_json::json!({
-                "message": serde_json::from_str::<Value>(&msg).unwrap_or(Value::String(msg)),
-                "parts": parts.into_iter().map(|p| serde_json::from_str::<Value>(&p).unwrap_or(Value::String(p))).collect::<Vec<_>>(),
-            }))?);
+            return raw_v1_turn(conn, sid, item_id);
         }
     }
     // Legacy JSON storage: `.../storage/session/<proj>/<sid>.json`
@@ -687,6 +693,73 @@ pub fn extract_raw_item(source_path: &str, item_id: &str) -> Result<String> {
         }
     }
     Ok(format!("source_path={source_path} item_id={item_id}"))
+}
+
+/// Raw records of one conversational turn. A user message maps to itself; an assistant message
+/// maps to every message that answers the same user message (`parentID`), so the tool calls that
+/// preceded the final text are part of the trace. Messages after `item_id` are not included.
+fn raw_v1_turn(conn: &Connection, sid: &str, item_id: &str) -> Result<String> {
+    let read_msg = |id: &str| -> Option<Value> {
+        conn.query_row(
+            "SELECT COALESCE(data, '') FROM message WHERE session_id = ?1 AND id = ?2",
+            params![sid, id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+    };
+    let own = read_msg(item_id);
+    let parent = own
+        .as_ref()
+        .and_then(|m| m.get("parentID"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(p) = &parent {
+        ids.push(p.clone());
+        let mut stmt = conn.prepare(
+            "SELECT id, COALESCE(data, '') FROM message WHERE session_id = ?1 AND rowid <=
+                (SELECT rowid FROM message WHERE session_id = ?1 AND id = ?2) ORDER BY rowid ASC",
+        )?;
+        for row in stmt.query_map(params![sid, item_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (id, data) = row?;
+            let same_turn = serde_json::from_str::<Value>(&data)
+                .ok()
+                .and_then(|v| {
+                    v.get("parentID")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .is_some_and(|pid| &pid == p);
+            if same_turn {
+                ids.push(id);
+            }
+        }
+    } else {
+        ids.push(item_id.to_string());
+    }
+
+    let mut out = Vec::new();
+    for id in ids {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(data, '') FROM part WHERE session_id = ?1 AND message_id = ?2 ORDER BY rowid ASC",
+        )?;
+        let parts: Vec<Value> = stmt
+            .query_map(params![sid, &id], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|p| serde_json::from_str(&p).unwrap_or(Value::String(p)))
+            .collect();
+        out.push(serde_json::json!({
+            "message_id": id,
+            "message": read_msg(&id).unwrap_or(Value::Null),
+            "parts": parts,
+        }));
+    }
+    Ok(serde_json::to_string_pretty(&out)?)
 }
 
 fn has_table(conn: &Connection, name: &str) -> bool {

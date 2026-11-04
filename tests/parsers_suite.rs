@@ -494,6 +494,146 @@ fn pi_and_omp_parsers_filter_temp_faux_and_subagents_and_strip_reminders() {
 }
 
 #[test]
+fn opencode_run_prompts_stored_as_json_strings_are_unquoted() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("opencode.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session VALUES ('ses_q', NULL, '/Users/a/proj', 'T', 1760000000000, 1760000001000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('m_u', 'ses_q', 1760000001000, 1760000001000, ?1)",
+            params![json!({"role": "user", "time": {"created": 1760000001000i64}}).to_string()],
+        )
+        .unwrap();
+        // `opencode run "<prompt>"` stores the text part as a JSON-encoded string.
+        conn.execute(
+            "INSERT INTO part VALUES ('p1', 'ses_q', 'm_u', 1, 1, ?1)",
+            params![
+                json!({"type": "text", "text": "\"한 줄 질문입니다: 따옴표 \\\"안\\\" 보존\""})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES ('m_a', 'ses_q', 1760000002000, 1760000002000, ?1)",
+            params![
+                json!({"role": "assistant", "time": {"created": 1760000002000i64}}).to_string()
+            ],
+        )
+        .unwrap();
+        // A genuine assistant answer that merely starts and ends with quotes must stay untouched.
+        conn.execute(
+            "INSERT INTO part VALUES ('p2', 'ses_q', 'm_a', 2, 2, ?1)",
+            params![json!({"type": "text", "text": "\"quoted\" is a word, not JSON"}).to_string()],
+        )
+        .unwrap();
+    }
+    let opts = ParseOptions::default();
+    let cand = wombat::parsers::opencode::discover(dir.path(), &opts)
+        .unwrap()
+        .remove(0);
+    let ParseOutcome::Session(s) = parse_candidate(&cand, &opts).unwrap() else {
+        panic!("expected session");
+    };
+    assert_eq!(s.turns[0].text, "한 줄 질문입니다: 따옴표 \"안\" 보존");
+    assert_eq!(s.turns[1].text, "\"quoted\" is a word, not JSON");
+}
+
+#[test]
+fn opencode_trace_of_a_reply_includes_the_tool_messages_of_its_turn() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("opencode.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session VALUES ('ses_t', NULL, '/Users/a/proj', 'T', 1760000000000, 1760000009000)",
+            [],
+        )
+        .unwrap();
+        // user -> assistant(tool edit) -> assistant(final text) -> user2 -> assistant(final text)
+        let msgs = [
+            ("m1", "user", None),
+            ("m2", "assistant", Some("m1")),
+            ("m3", "assistant", Some("m1")),
+            ("m4", "user", None),
+            ("m5", "assistant", Some("m4")),
+        ];
+        for (i, (id, role, parent)) in msgs.iter().enumerate() {
+            let t = 1760000001000i64 + i as i64 * 1000;
+            conn.execute(
+                "INSERT INTO message VALUES (?1, 'ses_t', ?2, ?2, ?3)",
+                params![
+                    id,
+                    t,
+                    json!({"role": role, "parentID": parent, "time": {"created": t}}).to_string()
+                ],
+            )
+            .unwrap();
+        }
+        let parts = [
+            ("p1", "m1", json!({"type": "text", "text": "고쳐줘"})),
+            (
+                "p2",
+                "m2",
+                json!({"type": "tool", "tool": "edit", "state": {"output": "TOOL_DIFF_SECRET_123"}}),
+            ),
+            ("p3", "m3", json!({"type": "text", "text": "고쳤습니다"})),
+            ("p4", "m4", json!({"type": "text", "text": "고마워"})),
+            ("p5", "m5", json!({"type": "text", "text": "천만에요"})),
+        ];
+        for (id, mid, data) in parts {
+            conn.execute(
+                "INSERT INTO part VALUES (?1, 'ses_t', ?2, 1, 1, ?3)",
+                params![id, mid, data.to_string()],
+            )
+            .unwrap();
+        }
+    }
+    let opts = ParseOptions::default();
+    let cand = wombat::parsers::opencode::discover(dir.path(), &opts)
+        .unwrap()
+        .remove(0);
+    let ParseOutcome::Session(s) = parse_candidate(&cand, &opts).unwrap() else {
+        panic!("expected session");
+    };
+    // The mirror itself never carries the tool output.
+    assert!(!render_mirror(&s).content.contains("TOOL_DIFF_SECRET_123"));
+    assert_eq!(s.turns.len(), 4);
+
+    // Tracing the first reply recovers the earlier tool message of the same turn...
+    let first_reply = extract_raw_trace(
+        AgentKind::OpenCode,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(
+        first_reply.contains("TOOL_DIFF_SECRET_123"),
+        "{first_reply}"
+    );
+    assert!(first_reply.contains("고쳤습니다"));
+    // ...but not the next turn's messages.
+    assert!(!first_reply.contains("천만에요"));
+}
+
+#[test]
 fn opencode_v1_v2_sqlite_and_legacy_json_parsers_work() {
     let dir = TempDir::new().unwrap();
 
