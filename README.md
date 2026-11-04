@@ -78,8 +78,9 @@ Releases are cut by pushing a version tag; `.github/workflows/release.yml` does 
 1. Bump `version` in `Cargo.toml` (and `Cargo.lock` via `cargo check`), merge to `main`.
 2. `git tag v0.2.0 && git push origin v0.2.0`. The tag must equal the `Cargo.toml` version or the run fails.
 3. The workflow runs the tests and a `cargo publish --dry-run`, builds `wombat` for Linux x86_64 and
-   macOS arm64/x86_64, creates the GitHub Release with the tarballs and `.sha256` files, and publishes
+   macOS arm64, creates the GitHub Release with the tarballs and `.sha256` files, and publishes
    `wombat-sessions` to crates.io. A version already on crates.io is skipped, so a failed run can be re-run.
+   Intel macOS has no prebuilt binary; use `cargo install wombat-sessions`.
 
 crates.io publishing uses [Trusted Publishing](https://crates.io/docs/trusted-publishing) (GitHub OIDC),
 so no `CARGO_REGISTRY_TOKEN` secret is stored. One-time setup (crates.io -> `wombat-sessions` ->
