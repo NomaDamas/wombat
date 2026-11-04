@@ -1,5 +1,7 @@
 name: probe-runners
-on: workflow_dispatch
+on:
+  pull_request:
+    paths: [".github/workflows/probe-runners.yml"]
 jobs:
   probe:
     strategy:
