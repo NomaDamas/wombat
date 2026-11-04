@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub enum AgentKind {
     Codex,
     ClaudeCode,
+    #[serde(rename = "opencode")]
     OpenCode,
     Pi,
     Omp,

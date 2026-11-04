@@ -5,6 +5,17 @@ use wombat::minsync::{MinSyncConfig, QueryMode, SemVer, StageItem, StageOpenPara
 use wombat::mirror::{locate_chunk_turns, parse_mirror_document, render_mirror};
 use wombat::model::{AgentKind, ParsedSession, Role, SourceOffset, Turn};
 
+#[test]
+fn agent_json_name_matches_cli_name_and_round_trips() {
+    for agent in AgentKind::ALL {
+        let json = serde_json::to_string(&agent).unwrap();
+        assert_eq!(json, format!("\"{}\"", agent.as_str()), "{agent:?}");
+        let back: AgentKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, agent);
+        assert_eq!(AgentKind::parse_name(agent.as_str()), Some(agent));
+    }
+}
+
 fn sample_session() -> ParsedSession {
     ParsedSession {
         agent: AgentKind::Codex,
