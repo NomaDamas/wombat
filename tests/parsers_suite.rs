@@ -46,8 +46,8 @@ fn automation_workspaces_are_ephemeral_but_real_projects_are_not() {
     for c in [
         "/tmp/x",
         "/private/var/folders/ab/T/run",
-        "/Users/jeffrey/.autorag/workspace",
-        "/Users/jeffrey/.autorag/workspace/sub",
+        "/Users/alice/.autorag/workspace",
+        "/Users/alice/.autorag/workspace/sub",
         "/Volumes/SSD1/4/AutoRAG/.bench/ws-noemit",
         "/Volumes/SSD1/4/AutoRAG/.bench-ws-main",
     ] {
@@ -55,9 +55,9 @@ fn automation_workspaces_are_ephemeral_but_real_projects_are_not() {
     }
     for c in [
         "/Volumes/SSD1/1/wombat",
-        "/Users/jeffrey/.autorag-notes",
-        "/Users/jeffrey/Projects/autorag/workspace",
-        "/Users/jeffrey/Projects/workbench/notes",
+        "/Users/alice/.autorag-notes",
+        "/Users/alice/Projects/autorag/workspace",
+        "/Users/alice/Projects/workbench/notes",
     ] {
         assert!(!is_ephemeral_temp_cwd(c), "{c} should be kept");
     }
@@ -97,7 +97,7 @@ fn codex_zst_parser_strips_system_reasoning_and_tools_and_keeps_line_offsets() {
             "payload": {
                 "session_id": "01a13fa4-1b1a-7c03-9fcd-cce611b321ca",
                 "timestamp": "2026-10-15T12:58:01.885Z",
-                "cwd": "/Users/jeffrey/Projects/banana",
+                "cwd": "/Users/alice/Projects/banana",
                 "thread_source": "user"
             }
         }),
@@ -118,7 +118,7 @@ fn codex_zst_parser_strips_system_reasoning_and_tools_and_keeps_line_offsets() {
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>NOISE_AGENTS_MD</INSTRUCTIONS>"},
-                    {"type": "input_text", "text": "<environment_context><cwd>/Users/jeffrey/Projects/banana</cwd></environment_context>"}
+                    {"type": "input_text", "text": "<environment_context><cwd>/Users/alice/Projects/banana</cwd></environment_context>"}
                 ]
             }
         }),
@@ -238,7 +238,7 @@ fn codex_zst_parser_strips_system_reasoning_and_tools_and_keeps_line_offsets() {
                 "type": "session_meta",
                 "payload": {
                     "session_id": "sub-1",
-                    "cwd": "/Users/jeffrey/Projects/banana",
+                    "cwd": "/Users/alice/Projects/banana",
                     "thread_source": {"subagent": {"thread_spawn": {"parent_thread_id": "parent-1"}}}
                 }
             }),
@@ -267,7 +267,7 @@ fn codex_headless_exec_sessions_are_skipped_unless_ephemeral_included() {
         &path,
         &[
             json!({"type": "session_meta", "payload": {
-                "session_id": "exec-1", "cwd": "/Users/jeffrey/Projects/k-skill",
+                "session_id": "exec-1", "cwd": "/Users/alice/Projects/k-skill",
                 "originator": "codex_exec", "thread_source": "user"}}),
             json!({"type": "response_item", "payload": {"type": "message", "role": "user",
                 "content": [{"type": "input_text", "text": "You are reviewing PR #405 in NomaDamas/k-skill"}]}}),
