@@ -10,6 +10,26 @@ use wombat::parsers::{
     ParseOptions, ParseOutcome, SourceRoots, discover_all, extract_raw_trace, parse_candidate,
 };
 
+#[test]
+fn automation_workspaces_are_ephemeral_but_real_projects_are_not() {
+    use wombat::model::is_ephemeral_temp_cwd;
+    for c in [
+        "/tmp/x",
+        "/private/var/folders/ab/T/run",
+        "/Users/jeffrey/.autorag/workspace",
+        "/Users/jeffrey/.autorag/workspace/sub",
+    ] {
+        assert!(is_ephemeral_temp_cwd(c), "{c} should be ephemeral");
+    }
+    for c in [
+        "/Volumes/SSD1/1/wombat",
+        "/Users/jeffrey/.autorag-notes",
+        "/Users/jeffrey/Projects/autorag/workspace",
+    ] {
+        assert!(!is_ephemeral_temp_cwd(c), "{c} should be kept");
+    }
+}
+
 fn write_zst_lines(path: &Path, lines: &[serde_json::Value]) {
     let file = std::fs::File::create(path).unwrap();
     let mut enc = zstd::stream::write::Encoder::new(file, 3).unwrap();
@@ -226,6 +246,41 @@ fn codex_zst_parser_strips_system_reasoning_and_tools_and_keeps_line_offsets() {
     assert!(matches!(
         parse_candidate(&sub_cand, &opts).unwrap(),
         ParseOutcome::Skipped { reason: "subagent" }
+    ));
+}
+
+#[test]
+fn codex_headless_exec_sessions_are_skipped_unless_ephemeral_included() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("rollout-exec.jsonl");
+    write_jsonl_lines(
+        &path,
+        &[
+            json!({"type": "session_meta", "payload": {
+                "session_id": "exec-1", "cwd": "/Users/jeffrey/Projects/k-skill",
+                "originator": "codex_exec", "thread_source": "user"}}),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "You are reviewing PR #405 in NomaDamas/k-skill"}]}}),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "verdict: ok"}]}}),
+        ],
+    );
+    let cand = wombat::parsers::codex::discover(dir.path())
+        .unwrap()
+        .remove(0);
+    assert!(matches!(
+        parse_candidate(&cand, &ParseOptions::default()).unwrap(),
+        ParseOutcome::Skipped {
+            reason: "headless_exec"
+        }
+    ));
+    let keep = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    assert!(matches!(
+        parse_candidate(&cand, &keep).unwrap(),
+        ParseOutcome::Session(_)
     ));
 }
 

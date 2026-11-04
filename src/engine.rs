@@ -211,11 +211,21 @@ pub fn run_sync(cfg: &RuntimeConfig, opts: &SyncOptions) -> Result<SyncReport> {
     let mut catalog = Catalog::open(&cfg.catalog_path)?;
     let mut stage = ms.open_stage_session()?;
 
-    // When `--agent` narrows discovery to a subset of agents, preserve items belonging to other agents!
-    let unknown_preserved = if opts.agents.is_some() {
-        collect_other_agent_keys(&catalog, opts.agents.as_deref().unwrap_or(&[]))?
-    } else {
-        Vec::new()
+    // An `--agent` scoped run only discovers some agents; keys the stage already holds for the
+    // others (including skipped ones, which the catalog never sees) must be preserved, not deleted.
+    let unknown_preserved: Vec<String> = match opts.agents.as_deref() {
+        Some(included) => {
+            let scope_prefixes: Vec<String> = included
+                .iter()
+                .map(|a| format!("{}/", a.as_str()))
+                .collect();
+            stage
+                .known_keys("wombat-sessions", &cfg.mirror_dir)?
+                .into_iter()
+                .filter(|k| !scope_prefixes.iter().any(|p| k.starts_with(p)))
+                .collect()
+        }
+        None => Vec::new(),
     };
 
     let fingerprint = format!(
@@ -338,26 +348,6 @@ pub fn run_sync(cfg: &RuntimeConfig, opts: &SyncOptions) -> Result<SyncReport> {
         total_messages: total_turns,
         indexed,
     })
-}
-
-fn collect_other_agent_keys(
-    catalog: &Catalog,
-    included_agents: &[AgentKind],
-) -> Result<Vec<String>> {
-    let mut keys = Vec::new();
-    for agent in AgentKind::ALL {
-        if included_agents.contains(&agent) {
-            continue;
-        }
-        // Query item_keys via sessions list? Add helper on Catalog if needed, or list_sessions.
-        let sessions = catalog.list_sessions(Some(agent), 1_000_000)?;
-        for s in sessions {
-            if let Some(ik) = catalog.get_item_key(&s.catalog_key)? {
-                keys.push(ik);
-            }
-        }
-    }
-    Ok(keys)
 }
 
 pub fn run_index(cfg: &RuntimeConfig, full: bool) -> Result<IndexReport> {

@@ -48,6 +48,7 @@ pub fn parse_file(path: &Path, opts: &ParseOptions) -> Result<ParseOutcome> {
     let mut ended_at: Option<String> = None;
     let mut is_subagent = false;
     let mut parent_session_id: Option<String> = None;
+    let mut is_headless = false;
 
     let mut turns: Vec<Turn> = Vec::new();
     let mut fallback_turns: Vec<Turn> = Vec::new();
@@ -88,6 +89,12 @@ pub fn parse_file(path: &Path, opts: &ParseOptions) -> Result<ParseOutcome> {
                     }
                     if let Some(c) = payload.get("cwd").and_then(Value::as_str) {
                         cwd = Some(c.to_string());
+                    }
+                    if matches!(
+                        payload.get("originator").and_then(Value::as_str),
+                        Some("codex_exec" | "codex_sdk_ts")
+                    ) {
+                        is_headless = true;
                     }
                     if let Some(meta_ts) = payload.get("timestamp").and_then(Value::as_str) {
                         started_at = Some(meta_ts.to_string());
@@ -183,6 +190,11 @@ pub fn parse_file(path: &Path, opts: &ParseOptions) -> Result<ParseOutcome> {
 
     if is_subagent && !opts.include_subagents {
         return Ok(ParseOutcome::Skipped { reason: "subagent" });
+    }
+    if is_headless && !opts.include_ephemeral {
+        return Ok(ParseOutcome::Skipped {
+            reason: "headless_exec",
+        });
     }
     if !opts.include_ephemeral
         && let Some(c) = cwd.as_deref()

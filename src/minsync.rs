@@ -556,6 +556,28 @@ impl StageSession {
             .unwrap_or(false))
     }
 
+    /// Every key the stage durably holds (committed, skipped or failed), via the read-only
+    /// `inspect` op. Used to preserve items outside an agent-scoped run.
+    pub fn known_keys(&mut self, source_id: &str, output_root: &Path) -> Result<Vec<String>> {
+        let resp = self.request(&json!({
+            "op": "inspect",
+            "stage": "wombat-mirror",
+            "source_id": source_id,
+            "output_root": output_root,
+        }))?;
+        ensure_stage_ok(&resp, "inspect")?;
+        Ok(resp
+            .get("known")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.get("key").and_then(Value::as_str).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub fn finish(mut self) -> Result<StageFinishResponse> {
         let resp = self.request(&json!({ "op": "finish" }))?;
         ensure_stage_ok(&resp, "finish")?;

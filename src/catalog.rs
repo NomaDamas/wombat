@@ -382,17 +382,6 @@ impl Catalog {
             .map_err(Into::into)
     }
 
-    pub fn get_item_key(&self, catalog_key: &str) -> Result<Option<String>> {
-        self.conn
-            .query_row(
-                "SELECT item_key FROM sessions WHERE catalog_key = ?1",
-                params![catalog_key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
     fn query_one_session(
         &self,
         sql: &str,

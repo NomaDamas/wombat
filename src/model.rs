@@ -245,10 +245,17 @@ pub fn truncate_chars(raw: String, max_chars: usize) -> String {
 }
 
 pub fn is_ephemeral_temp_cwd(cwd: &str) -> bool {
-    let p = cwd.trim();
+    let p = cwd.trim().trim_end_matches('/');
     p == "/tmp"
         || p.starts_with("/tmp/")
         || p.starts_with("/private/tmp/")
         || p.starts_with("/var/folders/")
         || p.starts_with("/private/var/folders/")
+        || is_autorag_workspace(p)
+}
+
+/// AutoRAG runs its own librarian agents in `<home>/.autorag/workspace`; those sessions are
+/// machine-issued prompts, not conversations with the user.
+fn is_autorag_workspace(p: &str) -> bool {
+    p.ends_with("/.autorag/workspace") || p.contains("/.autorag/workspace/")
 }
