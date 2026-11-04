@@ -1,6 +1,5 @@
 pub mod claude_code;
 pub mod codex;
-pub mod cursor;
 pub mod opencode;
 pub mod pi;
 
@@ -33,7 +32,6 @@ pub struct SourceRoots {
     pub opencode: Vec<PathBuf>,
     pub pi: Vec<PathBuf>,
     pub omp: Vec<PathBuf>,
-    pub cursor: Vec<PathBuf>,
 }
 
 impl SourceRoots {
@@ -70,25 +68,6 @@ impl SourceRoots {
                 &mut roots.omp,
                 h.join(".omp").join("agent").join("sessions"),
             );
-
-            // Cursor CLI + IDE
-            let cursor_cli = std::env::var_os("CURSOR_CONFIG_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| h.join(".cursor"));
-            push_if_exists(&mut roots.cursor, cursor_cli);
-            #[cfg(target_os = "macos")]
-            push_if_exists(
-                &mut roots.cursor,
-                h.join("Library")
-                    .join("Application Support")
-                    .join("Cursor")
-                    .join("User"),
-            );
-            #[cfg(not(target_os = "macos"))]
-            push_if_exists(
-                &mut roots.cursor,
-                h.join(".config").join("Cursor").join("User"),
-            );
         }
         roots
     }
@@ -100,7 +79,6 @@ impl SourceRoots {
             AgentKind::OpenCode => &self.opencode,
             AgentKind::Pi => &self.pi,
             AgentKind::Omp => &self.omp,
-            AgentKind::Cursor => &self.cursor,
         }
     }
 }
@@ -130,7 +108,6 @@ pub fn discover_all(
                 AgentKind::OpenCode => opencode::discover(root, opts)?,
                 AgentKind::Pi => pi::discover(root, AgentKind::Pi, opts)?,
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
-                AgentKind::Cursor => cursor::discover(root, opts)?,
             };
             out.extend(discovered);
         }
@@ -147,7 +124,6 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::OpenCode => opencode::parse_candidate(candidate, opts),
         AgentKind::Pi => pi::parse_file(&candidate.fs_path, AgentKind::Pi, opts),
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
-        AgentKind::Cursor => cursor::parse_candidate(candidate, opts),
     }
 }
 
@@ -192,7 +168,6 @@ pub fn extract_raw_trace(
         }
         SourceOffset::Item { item_id } => match agent {
             AgentKind::OpenCode => opencode::extract_raw_item(source_path, item_id),
-            AgentKind::Cursor => cursor::extract_raw_item(source_path, item_id),
             _ => Ok(format!("source_path={source_path} item_id={item_id}")),
         },
     }

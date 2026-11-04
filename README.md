@@ -1,6 +1,6 @@
 # wombat
 
-Distill coding-agent session logs (**Codex**, **Claude Code**, **OpenCode**, **Pi**, **OMP**, **Cursor**) into a prefix-stable plain-text mirror directory, then index and search user–assistant dialogue via the external [`minsync`](https://github.com/NomaDamas/MinSync) CLI (`>= 0.6.0`) using **SPLADE** (`KURE-Sparse-nano`), **dense embeddings** (`Qwen/Qwen3-Embedding-0.6B`), and **incremental content-defined chunking**.
+Distill coding-agent session logs (**Codex**, **Claude Code**, **OpenCode**, **Pi**, **OMP**) into a prefix-stable plain-text mirror directory, then index and search user–assistant dialogue via the external [`minsync`](https://github.com/NomaDamas/MinSync) CLI (`>= 0.6.0`) using **SPLADE** (`KURE-Sparse-nano`), **dense embeddings** (`Qwen/Qwen3-Embedding-0.6B`), and **incremental content-defined chunking**.
 
 Designed as an external CLI datasource for **AutoRAG**.
 
@@ -11,7 +11,6 @@ Designed as an external CLI datasource for **AutoRAG**.
    - **Claude Code** (`~/.claude/projects`): project `.jsonl` transcripts (skips `isMeta`, slash-command stdout, snapshots, and `subagents/` sidechains by default).
    - **OpenCode** (`~/.local/share/opencode`): `opencode.db` v2 (`session_v2`/`session_message`), v1 (`session`/`message`/`part`), and legacy `storage/` JSON trees via WAL-safe read-only SQLite snapshots.
    - **Pi & OMP** (`~/.pi/agent/sessions`, `~/.omp/agent/sessions`): v3 JSONL sessions (skips ephemeral `/tmp` / `/var/folders`, `faux` automations, and nested subagent logs by default).
-   - **Cursor** (`~/.cursor`, `Cursor/User`): CLI `chats/*/*/store.db` (hex metadata + protobuf root tree + SHA-256 blobs + `<user_query>` extraction), IDE `state.vscdb` (`cursorDiskKV` `composerData:`/`bubbleId:`), and `agent-transcripts/*.jsonl`.
 2. **Prefix-stable mirror (`src/mirror.rs`)** — each session renders to `<data_dir>/mirror/<agent>/<project_slug>/<session>__<hash>.md`. Volatile values (mutable titles, `ended_at`) live only in `catalog.sqlite3`, never in the mirror body, so appended turns extend files strictly by byte prefix and existing CDC chunks keep their hashes and embeddings.
 3. **Incremental materialization + indexing (`src/minsync.rs`, `src/engine.rs`)** — `minsync stage` tracks per-source fingerprints so unchanged sessions are not re-parsed; `minsync sync` incrementally updates only new/modified chunks across both SPLADE and dense indexes. Every `minsync` interaction uses the external binary (`minsync init|stage|sync|query|status`); the `minsync` crate is never linked.
 4. **Session & full-trace navigation (`src/catalog.rs`, `wombat show`, `wombat trace`)** — every rendered turn records its exact source pointer (`[src:L134]` for JSONL/zstd lines or `[src:id:<msg_id>]` for SQLite stores), allowing an agent to jump from any retrieved chunk straight to the surrounding turns or the raw underlying session trace (including tool calls and diffs).
@@ -38,7 +37,7 @@ wombat --data-dir ~/.wombat --source codex=~/.codex/sessions sync --index
 # Search dialogue (modes: hybrid [default], keyword/sparse [SPLADE], semantic/vector [dense])
 wombat search "BM25 형태소 분석기"
 wombat search keyword "1Password Chrome CSV" --limit 5
-wombat search semantic "LanceDB snapshot isolation" --agent cursor --json
+wombat search semantic "LanceDB snapshot isolation" --agent opencode --json
 
 # Inspect sessions, clean dialogue turns, or full raw traces (with tool outputs)
 wombat sessions --limit 20

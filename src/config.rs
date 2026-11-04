@@ -35,8 +35,6 @@ pub struct SourcesConfig {
     pub pi: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub omp: Option<Vec<PathBuf>>,
-    #[serde(default)]
-    pub cursor: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,7 +122,6 @@ impl RuntimeConfig {
                     Some(AgentKind::OpenCode) => explicit.opencode.push(path),
                     Some(AgentKind::Pi) => explicit.pi.push(path),
                     Some(AgentKind::Omp) => explicit.omp.push(path),
-                    Some(AgentKind::Cursor) => explicit.cursor.push(path),
                     None => attach_auto_detected_source(&mut explicit, &path),
                 }
             }
@@ -146,9 +143,6 @@ impl RuntimeConfig {
             if let Some(v) = file_cfg.sources.omp {
                 base.omp = v;
             }
-            if let Some(v) = file_cfg.sources.cursor {
-                base.cursor = v;
-            }
             base
         };
 
@@ -158,7 +152,6 @@ impl RuntimeConfig {
         roots.opencode.sort();
         roots.pi.sort();
         roots.omp.sort();
-        roots.cursor.sort();
 
         Ok(Self {
             data_dir,
@@ -201,19 +194,12 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.omp.push(path.to_path_buf());
     } else if s.contains(".pi") || s.contains("/pi") {
         roots.pi.push(path.to_path_buf());
-    } else if s.contains("cursor") || s.ends_with(".vscdb") || s.ends_with("store.db") {
-        roots.cursor.push(path.to_path_buf());
+    } else if path.join("storage").is_dir() {
+        roots.opencode.push(path.to_path_buf());
     } else {
-        // Push to all file/dir capable roots? No, inspect structure lightly.
-        if path.join("chats").is_dir() || path.join("globalStorage").is_dir() {
-            roots.cursor.push(path.to_path_buf());
-        } else if path.join("storage").is_dir() {
-            roots.opencode.push(path.to_path_buf());
-        } else {
-            roots.codex.push(path.to_path_buf());
-            roots.claude_code.push(path.to_path_buf());
-            roots.pi.push(path.to_path_buf());
-        }
+        roots.codex.push(path.to_path_buf());
+        roots.claude_code.push(path.to_path_buf());
+        roots.pi.push(path.to_path_buf());
     }
 }
 

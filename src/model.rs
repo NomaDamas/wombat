@@ -10,17 +10,15 @@ pub enum AgentKind {
     OpenCode,
     Pi,
     Omp,
-    Cursor,
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 6] = [
+    pub const ALL: [AgentKind; 5] = [
         AgentKind::Codex,
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
         AgentKind::Pi,
         AgentKind::Omp,
-        AgentKind::Cursor,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -30,7 +28,6 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Pi => "pi",
             AgentKind::Omp => "omp",
-            AgentKind::Cursor => "cursor",
         }
     }
 
@@ -41,7 +38,6 @@ impl AgentKind {
             "opencode" | "open-code" | "open_code" => Some(AgentKind::OpenCode),
             "pi" => Some(AgentKind::Pi),
             "omp" | "oh-my-pi" => Some(AgentKind::Omp),
-            "cursor" | "cursor-agent" => Some(AgentKind::Cursor),
             _ => None,
         }
     }

@@ -41,8 +41,7 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
     let claude_dir = sources_dir.join("claude/proj-a");
     let oc_dir = sources_dir.join("opencode");
     let pi_dir = sources_dir.join("pi/--Volumes-SSD1-1-wombat--");
-    let cursor_dir = sources_dir.join("cursor/globalStorage");
-    for d in [&codex_dir, &claude_dir, &oc_dir, &pi_dir, &cursor_dir] {
+    for d in [&codex_dir, &claude_dir, &oc_dir, &pi_dir] {
         std::fs::create_dir_all(d).unwrap();
     }
 
@@ -157,37 +156,6 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
     )
     .unwrap();
 
-    // 5. Cursor IDE `state.vscdb`
-    {
-        let conn = Connection::open(cursor_dir.join("state.vscdb")).unwrap();
-        conn.execute(
-            "CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cursorDiskKV VALUES ('composerData:cur-sess-05', ?1)",
-            params![json!({
-                "composerId": "cur-sess-05",
-                "name": "Cursor Composer Thread",
-                "createdAt": 1762000000000i64,
-                "lastUpdatedAt": 1762000005000i64,
-                "fullConversationHeadersOnly": [{"bubbleId": "bb1", "type": 1}, {"bubbleId": "bb2", "type": 2}]
-            }).to_string()],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cursorDiskKV VALUES ('bubbleId:cur-sess-05:bb1', ?1)",
-            params![json!({"type": 1, "text": "neutrino_wal_snapshot 읽기 전용 모드 확인", "workspaceProjectDir": "/Volumes/SSD1/1/MinSync"}).to_string()],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cursorDiskKV VALUES ('bubbleId:cur-sess-05:bb2', ?1)",
-            params![json!({"type": 2, "text": "neutrino_wal_snapshot은 원본 폴더에 파일을 만들지 않습니다."}).to_string()],
-        )
-        .unwrap();
-    }
-
     let common_args = [
         "--data-dir",
         data_dir.to_str().unwrap(),
@@ -201,8 +169,6 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
         &format!("opencode={}", oc_dir.display()),
         "--source",
         &format!("pi={}", sources_dir.join("pi").display()),
-        "--source",
-        &format!("cursor={}", sources_dir.join("cursor").display()),
     ];
 
     // Step 1: `wombat doctor --json` (global flags BEFORE subcommand, per AutoRAG lazykatok client)
@@ -228,9 +194,9 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
         .stdout
         .clone();
     let sync_json: Value = serde_json::from_slice(&sync_out).unwrap();
-    assert_eq!(sync_json["total_sessions"], 5);
-    assert_eq!(sync_json["total_messages"], 10);
-    assert_eq!(sync_json["written"], 5);
+    assert_eq!(sync_json["total_sessions"], 4);
+    assert_eq!(sync_json["total_messages"], 8);
+    assert_eq!(sync_json["written"], 4);
 
     // Step 3: `wombat index --json`
     let idx_out = wombat_cmd()
@@ -242,7 +208,7 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
         .stdout
         .clone();
     let idx_json: Value = serde_json::from_slice(&idx_out).unwrap();
-    assert!(idx_json["chunkCount"].as_u64().unwrap() >= 5);
+    assert!(idx_json["chunkCount"].as_u64().unwrap() >= 4);
 
     // Step 4: `wombat search keyword "<query>" --json --limit 5` (bare JSON array!)
     let search_out = wombat_cmd()
@@ -397,7 +363,7 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
     let inc_json: Value = serde_json::from_slice(&inc_out).unwrap();
     assert_eq!(inc_json["processed"], 1);
     assert_eq!(inc_json["written"], 1);
-    assert_eq!(inc_json["total_messages"], 11);
+    assert_eq!(inc_json["total_messages"], 9);
 
     let delta_hits_raw = wombat_cmd()
         .args(common_args)
