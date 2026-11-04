@@ -224,6 +224,15 @@ pub fn parse_file(path: &Path, agent: AgentKind, opts: &ParseOptions) -> Result<
                 reason: "ephemeral_cwd",
             });
         }
+        if turns
+            .iter()
+            .find(|t| t.role == Role::User)
+            .is_some_and(|t| is_harness_prompt(&t.text))
+        {
+            return Ok(ParseOutcome::Skipped {
+                reason: "harness_prompt",
+            });
+        }
     }
 
     if turns.is_empty() {
@@ -312,4 +321,14 @@ fn derive_pi_id(path: &Path) -> String {
         return uuid.to_string();
     }
     stem.to_string()
+}
+
+/// Prompts AutoRAG's embedded pi librarian is driven with by its own code, not by the user.
+fn is_harness_prompt(first_user_text: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "Answer this original query immediately:",
+        "Answer this query directly from your own",
+        "Handle this request now, in this one turn",
+    ];
+    PREFIXES.iter().any(|p| first_user_text.starts_with(p))
 }

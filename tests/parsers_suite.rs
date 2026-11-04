@@ -11,6 +11,37 @@ use wombat::parsers::{
 };
 
 #[test]
+fn pi_skips_autorag_harness_sessions_even_in_real_project_dirs() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("--Volumes-SSD1-4-AutoRAG--");
+    std::fs::create_dir_all(&proj).unwrap();
+    let mk = |name: &str, first: &str| {
+        write_jsonl_lines(
+            &proj.join(name),
+            &[
+                json!({"type": "session", "id": name, "cwd": "/Volumes/SSD1/4/AutoRAG"}),
+                json!({"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": first}]}}),
+                json!({"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}}),
+            ],
+        );
+    };
+    mk(
+        "a_harness.jsonl",
+        "Answer this original query immediately: Who approves refunds?\n\nBaseline retrieval evidence",
+    );
+    mk("b_human.jsonl", "리팩터링 계획 먼저 세워줘");
+    let opts = ParseOptions::default();
+    let cands = wombat::parsers::pi::discover(dir.path(), AgentKind::Pi, &opts).unwrap();
+    let kept: Vec<_> = cands
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s.session_id),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(kept, vec!["b_human.jsonl".to_string()]);
+}
+#[test]
 fn automation_workspaces_are_ephemeral_but_real_projects_are_not() {
     use wombat::model::is_ephemeral_temp_cwd;
     for c in [

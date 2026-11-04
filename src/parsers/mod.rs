@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v4";
+pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v5";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParseOptions {
