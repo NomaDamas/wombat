@@ -1,6 +1,6 @@
 [package]
 name = "wombat-sessions"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Search your coding-agent session history (Codex, Claude Code, OpenCode, pi, omp) with MinSync SPLADE + dense retrieval"
