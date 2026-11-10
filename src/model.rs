@@ -11,15 +11,17 @@ pub enum AgentKind {
     OpenCode,
     Pi,
     Omp,
+    Hermes,
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 5] = [
+    pub const ALL: [AgentKind; 6] = [
         AgentKind::Codex,
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
         AgentKind::Pi,
         AgentKind::Omp,
+        AgentKind::Hermes,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -29,6 +31,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Pi => "pi",
             AgentKind::Omp => "omp",
+            AgentKind::Hermes => "hermes",
         }
     }
 
@@ -39,6 +42,7 @@ impl AgentKind {
             "opencode" | "open-code" | "open_code" => Some(AgentKind::OpenCode),
             "pi" => Some(AgentKind::Pi),
             "omp" | "oh-my-pi" => Some(AgentKind::Omp),
+            "hermes" | "hermes-agent" | "hermes_agent" => Some(AgentKind::Hermes),
             _ => None,
         }
     }
@@ -244,6 +248,7 @@ pub fn truncate_chars(raw: String, max_chars: usize) -> String {
 pub fn is_ephemeral_temp_cwd(cwd: &str) -> bool {
     let p = cwd.trim().trim_end_matches('/');
     p == "/tmp"
+        || p == "/private/tmp"
         || p.starts_with("/tmp/")
         || p.starts_with("/private/tmp/")
         || p.starts_with("/var/folders/")
