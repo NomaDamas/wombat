@@ -786,3 +786,112 @@ fn opencode_v1_v2_sqlite_and_legacy_json_parsers_work() {
     };
     assert_eq!(leg_s.turns[0].text, "레거시 JSON 스토리지도 지원하나요?");
 }
+
+#[test]
+fn hermes_db_and_json_sessions_are_parsed_without_harness_noise() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    {
+        let conn = Connection::open(home.join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL, title TEXT, cwd TEXT);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT, tool_name TEXT, tool_call_id TEXT, timestamp REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, display_kind TEXT);
+             INSERT INTO sessions VALUES ('s_chat', 'discord', NULL, 1777690945.5, 1777690999.0, 'T', '/Users/a/proj');
+             INSERT INTO sessions VALUES ('s_cron', 'cron', NULL, 1777690945.5, NULL, NULL, '/Users/a');
+             INSERT INTO messages (session_id, role, content, timestamp, active, display_kind) VALUES
+               ('s_chat', 'user', '디스크 이름 바뀜', 1777690946.0, 1, NULL),
+               ('s_chat', 'assistant', '', 1777690947.0, 1, NULL),
+               ('s_chat', 'tool', '{\"output\": \"x\"}', 1777690948.0, 1, NULL),
+               ('s_chat', 'assistant', '확인했다', 1777690949.0, 1, NULL),
+               ('s_chat', 'user', '[System note: Your previous turn was interrupted]', 1777690950.0, 1, NULL),
+               ('s_chat', 'assistant', '[CONTEXT COMPACTION — REFERENCE ONLY] summary', 1777690951.0, 1, NULL),
+               ('s_chat', 'assistant', 'Gateway shutting down', 1777690952.0, 1, 'failed_turn'),
+               ('s_chat', 'assistant', 'rewound away', 1777690953.0, 0, NULL),
+               ('s_cron', 'user', 'run job', 1777690946.0, 1, NULL);",
+        )
+        .unwrap();
+    }
+    write_json(
+        &home.join("sessions").join("session_20260502_210359_6013e7.json"),
+        &json!({
+            "session_id": "20260502_210359_6013e7",
+            "platform": "discord",
+            "session_start": "2026-05-02T21:03:59.057973",
+            "messages": [
+                {"role": "user", "content": "json only question"},
+                {"role": "assistant", "content": "", "tool_calls": []},
+                {"role": "tool", "content": "out"},
+                {"role": "assistant", "content": "json only answer"}
+            ]
+        }),
+    );
+    // Same id as the DB session: must not be emitted twice.
+    write_json(
+        &home.join("sessions").join("session_s_chat.json"),
+        &json!({"messages": [{"role": "user", "content": "dup"}]}),
+    );
+    write_json(
+        &home.join("sessions").join("session_cron_abc_20260101_000000.json"),
+        &json!({"platform": "cron", "messages": [{"role": "user", "content": "cron"}]}),
+    );
+
+    let opts = ParseOptions::default();
+    let roots = SourceRoots {
+        hermes: vec![home.to_path_buf()],
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    let mut ids: Vec<_> = cands.iter().map(|c| c.inner_id.clone().unwrap()).collect();
+    ids.sort();
+    assert_eq!(ids, ["20260502_210359_6013e7", "s_chat"]);
+
+    let by_id = |id: &str| cands.iter().find(|c| c.inner_id.as_deref() == Some(id)).unwrap();
+    let ParseOutcome::Session(s) = parse_candidate(by_id("s_chat"), &opts).unwrap() else {
+        panic!("expected db session");
+    };
+    assert_eq!(s.agent, AgentKind::Hermes);
+    assert_eq!(s.cwd.as_deref(), Some("/Users/a/proj"));
+    assert_eq!(s.title.as_deref(), Some("T"));
+    let texts: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        texts,
+        [(Role::User, "디스크 이름 바뀜"), (Role::Assistant, "확인했다")]
+    );
+    assert_eq!(
+        s.turns[1].source_offset,
+        SourceOffset::Item {
+            item_id: "4".into()
+        }
+    );
+    let raw = extract_raw_trace(
+        AgentKind::Hermes,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("\"role\": \"tool\"") && raw.contains("확인했다"));
+    assert!(!raw.contains("디스크 이름 바뀜"));
+
+    let ParseOutcome::Session(j) =
+        parse_candidate(by_id("20260502_210359_6013e7"), &opts).unwrap()
+    else {
+        panic!("expected json session");
+    };
+    assert_eq!(j.turns.len(), 2);
+    assert_eq!(j.turns[1].text, "json only answer");
+    let raw = extract_raw_trace(AgentKind::Hermes, &j.source_path, &j.turns[1].source_offset, 0)
+        .unwrap();
+    assert!(raw.contains("\"role\": \"tool\"") && raw.contains("json only answer"));
+
+    let with_cron = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    assert_eq!(discover_all(&roots, None, &with_cron).unwrap().len(), 4);
+}
+
+fn write_json(path: &Path, value: &serde_json::Value) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, value.to_string()).unwrap();
+}

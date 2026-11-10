@@ -1,6 +1,6 @@
 # wombat
 
-Distill coding-agent session logs (**Codex**, **Claude Code**, **OpenCode**, **Pi**, **OMP**) into a prefix-stable plain-text mirror directory, then index and search user–assistant dialogue via the external [`minsync`](https://github.com/NomaDamas/MinSync) CLI (`>= 0.6.0`) using **SPLADE** (`KURE-Sparse-nano`), **dense embeddings** (`Qwen/Qwen3-Embedding-0.6B`), and **incremental content-defined chunking**.
+Distill coding-agent session logs (**Codex**, **Claude Code**, **OpenCode**, **Pi**, **OMP**, **Hermes Agent**) into a prefix-stable plain-text mirror directory, then index and search user–assistant dialogue via the external [`minsync`](https://github.com/NomaDamas/MinSync) CLI (`>= 0.6.0`) using **SPLADE** (`KURE-Sparse-nano`), **dense embeddings** (`Qwen/Qwen3-Embedding-0.6B`), and **incremental content-defined chunking**.
 
 Designed as an external CLI datasource for **AutoRAG**.
 
@@ -10,6 +10,7 @@ Designed as an external CLI datasource for **AutoRAG**.
    - **Codex** (`~/.codex/sessions`, `~/.codex/archived_sessions`): streaming `.jsonl` and zstd `.jsonl.zst` rollouts.
    - **Claude Code** (`~/.claude/projects`): project `.jsonl` transcripts (skips `isMeta`, slash-command stdout, snapshots, and `subagents/` sidechains by default).
    - **OpenCode** (`~/.local/share/opencode`): `opencode.db` v2 (`session_v2`/`session_message`), v1 (`session`/`message`/`part`), and legacy `storage/` JSON trees via WAL-safe read-only SQLite snapshots.
+   - **Hermes Agent** (`~/.hermes` or `$HERMES_HOME`, plus `profiles/*`): `state.db` `sessions`/`messages` (read-only, WAL-safe) and `sessions/session_*.json` snapshots for sessions absent from any DB. Cron-run sessions, `/tmp` cwd sessions, harness `[System note:]` prompts, context-compaction summaries and failed/hidden turns are skipped.
    - **Pi & OMP** (`~/.pi/agent/sessions`, `~/.omp/agent/sessions`): v3 JSONL sessions (skips ephemeral `/tmp` / `/var/folders`, `faux` automations, and nested subagent logs by default).
 2. **Prefix-stable mirror (`src/mirror.rs`)** — each session renders to `<data_dir>/mirror/<agent>/<project_slug>/<session>__<hash>.md`. Volatile values (mutable titles, `ended_at`) live only in `catalog.sqlite3`, never in the mirror body, so appended turns extend files strictly by byte prefix and existing CDC chunks keep their hashes and embeddings.
 3. **Incremental materialization + indexing (`src/minsync.rs`, `src/engine.rs`)** — `minsync stage` tracks per-source fingerprints so unchanged sessions are not re-parsed; `minsync sync` incrementally updates only new/modified chunks across both SPLADE and dense indexes. Every `minsync` interaction uses the external binary (`minsync init|stage|sync|query|status`); the `minsync` crate is never linked.

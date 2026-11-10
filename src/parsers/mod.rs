@@ -1,5 +1,6 @@
 pub mod claude_code;
 pub mod codex;
+pub mod hermes;
 pub mod opencode;
 pub mod pi;
 
@@ -11,7 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v6";
+pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v7";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParseOptions {
@@ -32,6 +33,7 @@ pub struct SourceRoots {
     pub opencode: Vec<PathBuf>,
     pub pi: Vec<PathBuf>,
     pub omp: Vec<PathBuf>,
+    pub hermes: Vec<PathBuf>,
 }
 
 impl SourceRoots {
@@ -63,6 +65,12 @@ impl SourceRoots {
             // Pi
             push_if_exists(&mut roots.pi, h.join(".pi").join("agent").join("sessions"));
 
+            // Hermes Agent
+            let hermes_home = std::env::var_os("HERMES_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".hermes"));
+            push_if_exists(&mut roots.hermes, hermes_home);
+
             // OMP (Oh-My-Pi)
             push_if_exists(
                 &mut roots.omp,
@@ -79,6 +87,7 @@ impl SourceRoots {
             AgentKind::OpenCode => &self.opencode,
             AgentKind::Pi => &self.pi,
             AgentKind::Omp => &self.omp,
+            AgentKind::Hermes => &self.hermes,
         }
     }
 }
@@ -108,6 +117,7 @@ pub fn discover_all(
                 AgentKind::OpenCode => opencode::discover(root, opts)?,
                 AgentKind::Pi => pi::discover(root, AgentKind::Pi, opts)?,
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
+                AgentKind::Hermes => hermes::discover(root, opts)?,
             };
             out.extend(discovered);
         }
@@ -124,6 +134,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::OpenCode => opencode::parse_candidate(candidate, opts),
         AgentKind::Pi => pi::parse_file(&candidate.fs_path, AgentKind::Pi, opts),
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
+        AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
     }
 }
 
@@ -168,6 +179,7 @@ pub fn extract_raw_trace(
         }
         SourceOffset::Item { item_id } => match agent {
             AgentKind::OpenCode => opencode::extract_raw_item(source_path, item_id),
+            AgentKind::Hermes => hermes::extract_raw_item(source_path, item_id),
             _ => Ok(format!("source_path={source_path} item_id={item_id}")),
         },
     }
