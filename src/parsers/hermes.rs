@@ -4,12 +4,12 @@ use crate::model::{
     ms_to_rfc3339,
 };
 use crate::parsers::{
-    ParseOptions, ParseOutcome, file_version_token, open_readonly_sqlite, push_turn_dedup,
+    ParseOptions, ParseOutcome, file_version_token, open_live_sqlite, push_turn_dedup,
     strip_injected_system_blocks,
 };
 use anyhow::{Context, Result};
 use chrono::{LocalResult, NaiveDateTime, TimeZone};
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, params};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -70,24 +70,6 @@ fn hermes_homes(root: &Path) -> Vec<PathBuf> {
     homes
 }
 
-fn open_hermes_db(db_path: &Path) -> Result<rusqlite::Connection> {
-    // Hermes keeps state.db in WAL mode and a gateway usually holds it open. A plain read-only
-    // connection reads WAL content without copying the (hundreds of MB) database per session.
-    if let Ok(conn) = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) && conn
-        .busy_timeout(std::time::Duration::from_secs(5))
-        .is_ok()
-        && conn
-            .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-            .is_ok()
-    {
-        return Ok(conn);
-    }
-    Ok(open_readonly_sqlite(db_path)?.conn)
-}
-
 fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
         return false;
@@ -104,7 +86,7 @@ fn discover_db(
     opts: &ParseOptions,
     seen: &mut HashSet<String>,
 ) -> Result<Vec<SourceCandidate>> {
-    let conn = open_hermes_db(db_path)?;
+    let conn = open_live_sqlite(db_path)?;
     let mut stmt = conn
         .prepare(
             "SELECT s.id, COALESCE(s.source, ''), COUNT(m.id), COALESCE(MAX(m.id), 0),
@@ -210,9 +192,7 @@ fn dialogue_text(role: &str, content: &str) -> Option<(Role, String)> {
         // Harness-injected notices, not typed by the user.
         Role::User if trimmed.starts_with("[System note:") => return None,
         // Context-compaction handoff summaries and silent-delivery markers are harness output.
-        Role::Assistant
-            if trimmed.starts_with("[CONTEXT COMPACTION") || trimmed == "[SILENT]" =>
-        {
+        Role::Assistant if trimmed.starts_with("[CONTEXT COMPACTION") || trimmed == "[SILENT]" => {
             return None;
         }
         _ => {}
@@ -222,12 +202,16 @@ fn dialogue_text(role: &str, content: &str) -> Option<(Role, String)> {
 }
 
 fn parse_db_session(db_path: &Path, sid: &str, opts: &ParseOptions) -> Result<ParseOutcome> {
-    let conn = open_hermes_db(db_path)?;
+    let conn = open_live_sqlite(db_path)?;
     let has_cwd = has_column(&conn, "sessions", "cwd");
     let has_parent = has_column(&conn, "sessions", "parent_session_id");
     let sql = format!(
         "SELECT COALESCE(source, ''), {}, started_at, ended_at, title, {} FROM sessions WHERE id = ?1",
-        if has_parent { "parent_session_id" } else { "NULL" },
+        if has_parent {
+            "parent_session_id"
+        } else {
+            "NULL"
+        },
         if has_cwd { "cwd" } else { "NULL" },
     );
     type Meta = (
@@ -344,8 +328,7 @@ fn parse_json_session(path: &Path, sid: &str, opts: &ParseOptions) -> Result<Par
         .enumerate()
     {
         let role = msg.get("role").and_then(Value::as_str).unwrap_or("");
-        let Some((role, text)) = dialogue_text(role, &json_content_text(msg.get("content")))
-        else {
+        let Some((role, text)) = dialogue_text(role, &json_content_text(msg.get("content"))) else {
             continue;
         };
         push_turn_dedup(
@@ -422,7 +405,7 @@ pub fn extract_raw_item(source_path: &str, item_id: &str) -> Result<String> {
         && Path::new(db_str).is_file()
     {
         let id: i64 = item_id.parse().context("hermes item id is not a number")?;
-        let conn = open_hermes_db(Path::new(db_str))?;
+        let conn = open_live_sqlite(Path::new(db_str))?;
         let role: String = conn.query_row(
             "SELECT role FROM messages WHERE session_id = ?1 AND id = ?2",
             params![sid, id],

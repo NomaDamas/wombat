@@ -37,6 +37,8 @@ pub struct SourcesConfig {
     pub omp: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub hermes: Option<Vec<PathBuf>>,
+    #[serde(default)]
+    pub aside: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +127,7 @@ impl RuntimeConfig {
                     Some(AgentKind::Pi) => explicit.pi.push(path),
                     Some(AgentKind::Omp) => explicit.omp.push(path),
                     Some(AgentKind::Hermes) => explicit.hermes.push(path),
+                    Some(AgentKind::Aside) => explicit.aside.push(path),
                     None => attach_auto_detected_source(&mut explicit, &path),
                 }
             }
@@ -149,6 +152,9 @@ impl RuntimeConfig {
             if let Some(v) = file_cfg.sources.hermes {
                 base.hermes = v;
             }
+            if let Some(v) = file_cfg.sources.aside {
+                base.aside = v;
+            }
             base
         };
 
@@ -159,6 +165,7 @@ impl RuntimeConfig {
         roots.pi.sort();
         roots.omp.sort();
         roots.hermes.sort();
+        roots.aside.sort();
 
         Ok(Self {
             data_dir,
@@ -197,6 +204,8 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.claude_code.push(path.to_path_buf());
     } else if s.contains("opencode") || s.ends_with("opencode.db") {
         roots.opencode.push(path.to_path_buf());
+    } else if s.contains("aside") {
+        roots.aside.push(path.to_path_buf());
     } else if s.contains("hermes") {
         roots.hermes.push(path.to_path_buf());
     } else if s.contains(".omp") || s.contains("/omp") {
