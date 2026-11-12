@@ -382,3 +382,134 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
     assert!(!delta_hits.is_empty());
     assert_eq!(delta_hits[0]["end_turn"], 3);
 }
+
+/// Live pipeline for the Hermes and Aside sources: sync -> minsync index -> search -> trace,
+/// proving reasoning/tool noise stays out of the index and `--agent` scoping works.
+#[test]
+fn cli_end_to_end_hermes_and_aside_sources() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let hermes_home = tmp.path().join("hermes");
+    let aside_home = tmp.path().join("aside");
+    std::fs::create_dir_all(&hermes_home).unwrap();
+
+    {
+        let conn = Connection::open(hermes_home.join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL, title TEXT, cwd TEXT);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT, tool_name TEXT, tool_call_id TEXT, timestamp REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, display_kind TEXT);
+             INSERT INTO sessions VALUES ('h1', 'discord', NULL, 1777690945.5, 1777690999.0, 'hermes chat', '/Users/a/proj');
+             INSERT INTO messages (session_id, role, content, tool_calls, timestamp) VALUES
+               ('h1', 'user', 'hermes_umbra_ledger 는 뭐하는 거야?', NULL, 1777690946.0),
+               ('h1', 'assistant', '', '[{\"name\":\"HERMES_TOOLCALL_NEVER_INDEX\"}]', 1777690947.0),
+               ('h1', 'tool', 'HERMES_TOOLRESULT_NEVER_INDEX', NULL, 1777690948.0),
+               ('h1', 'assistant', 'hermes_umbra_ledger는 증분 원장입니다.', NULL, 1777690949.0);",
+        )
+        .unwrap();
+    }
+
+    let acct = aside_home.join("u/0");
+    std::fs::create_dir_all(acct.join("sessions/2026-11-01_as1")).unwrap();
+    {
+        let conn = Connection::open(acct.join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, trigger TEXT, ephemeral INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER, cwd TEXT);
+             INSERT INTO sessions VALUES ('as1', NULL, 'aside chat', '{\"type\":\"user\"}', 0, 1793536840, 1793536999, '/x');",
+        )
+        .unwrap();
+    }
+    let lines = [
+        json!({"role": "user", "content": "aside_nimbus_tab 예약 페이지 열어줘", "timestamp": 1793536840200i64}),
+        json!({"role": "assistant", "content": [{"type": "thinking", "thinking": "ASIDE_THINKING_NEVER_INDEX"}, {"type": "toolCall", "id": "c1", "name": "repl", "arguments": {"code": "ASIDE_TOOLCALL_NEVER_INDEX"}}], "timestamp": 1793536840400i64}),
+        json!({"role": "toolResult", "toolCallId": "c1", "toolName": "repl", "content": [{"type": "text", "text": "ASIDE_TOOLRESULT_NEVER_INDEX"}], "timestamp": 1793536840500i64}),
+        json!({"role": "assistant", "content": [{"type": "text", "text": "aside_nimbus_tab 페이지를 열었습니다."}], "timestamp": 1793536840600i64}),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(acct.join("sessions/2026-11-01_as1/messages.jsonl"), body).unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("hermes={}", hermes_home.display()),
+        "--source",
+        &format!("aside={}", aside_home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 2);
+    assert_eq!(sync["total_messages"], 4);
+    run(&["index", "--json"]);
+
+    let search = |query: &str, agent: Option<&str>| -> Vec<Value> {
+        let mut extra = vec!["search", "keyword", query, "--json"];
+        if let Some(a) = agent {
+            extra.extend(["--agent", a]);
+        }
+        serde_json::from_slice(&run(&extra)).unwrap()
+    };
+
+    let hits = search("aside_nimbus_tab", None);
+    assert_eq!(hits[0]["agent"], "aside");
+    assert_eq!(hits[0]["session_id"], "as1");
+    let hits = search("hermes_umbra_ledger", None);
+    assert_eq!(hits[0]["agent"], "hermes");
+    assert_eq!(hits[0]["session_id"], "h1");
+
+    // Agent scoping: every hit of an aside-scoped search belongs to aside, even for a query
+    // that only matches the hermes session (sparse retrieval always returns nearest chunks).
+    let scoped = search("hermes_umbra_ledger", Some("aside"));
+    assert!(scoped.iter().all(|h| h["agent"] == "aside"));
+    assert!(!search("aside_nimbus_tab", Some("aside")).is_empty());
+    assert!(
+        search("aside_nimbus_tab", Some("hermes"))
+            .iter()
+            .all(|h| h["agent"] == "hermes")
+    );
+
+    // Reasoning / tool payloads must never reach the indexed text.
+    for noise in [
+        "ASIDE_THINKING_NEVER_INDEX",
+        "ASIDE_TOOLCALL_NEVER_INDEX",
+        "ASIDE_TOOLRESULT_NEVER_INDEX",
+        "HERMES_TOOLCALL_NEVER_INDEX",
+        "HERMES_TOOLRESULT_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise, None).iter().all(|h| {
+                !h["snippet"].as_str().unwrap().contains(noise)
+                    && !h["content"].as_str().unwrap().contains(noise)
+            }),
+            "{noise} was indexed"
+        );
+    }
+
+    // Trace of the aside assistant turn exposes the raw tool call that the index hides.
+    let trace: Value =
+        serde_json::from_slice(&run(&["trace", "aside:as1", "--turn", "2", "--json"])).unwrap();
+    let raw = trace["raw_trace"].as_str().unwrap();
+    assert!(raw.contains("ASIDE_TOOLCALL_NEVER_INDEX") && raw.contains("페이지를 열었습니다"));
+    let trace: Value =
+        serde_json::from_slice(&run(&["trace", "hermes:h1", "--turn", "2", "--json"])).unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("HERMES_TOOLCALL_NEVER_INDEX")
+    );
+}

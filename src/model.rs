@@ -12,16 +12,18 @@ pub enum AgentKind {
     Pi,
     Omp,
     Hermes,
+    Aside,
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 6] = [
+    pub const ALL: [AgentKind; 7] = [
         AgentKind::Codex,
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
         AgentKind::Pi,
         AgentKind::Omp,
         AgentKind::Hermes,
+        AgentKind::Aside,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -32,6 +34,7 @@ impl AgentKind {
             AgentKind::Pi => "pi",
             AgentKind::Omp => "omp",
             AgentKind::Hermes => "hermes",
+            AgentKind::Aside => "aside",
         }
     }
 
@@ -43,6 +46,7 @@ impl AgentKind {
             "pi" => Some(AgentKind::Pi),
             "omp" | "oh-my-pi" => Some(AgentKind::Omp),
             "hermes" | "hermes-agent" | "hermes_agent" => Some(AgentKind::Hermes),
+            "aside" | "aside-browser" | "aside_browser" => Some(AgentKind::Aside),
             _ => None,
         }
     }

@@ -1,3 +1,4 @@
+pub mod aside;
 pub mod claude_code;
 pub mod codex;
 pub mod hermes;
@@ -12,7 +13,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v7";
+pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v8";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParseOptions {
@@ -34,6 +35,7 @@ pub struct SourceRoots {
     pub pi: Vec<PathBuf>,
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
+    pub aside: Vec<PathBuf>,
 }
 
 impl SourceRoots {
@@ -71,6 +73,9 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".hermes"));
             push_if_exists(&mut roots.hermes, hermes_home);
 
+            // Aside browser agent
+            push_if_exists(&mut roots.aside, h.join(".aside"));
+
             // OMP (Oh-My-Pi)
             push_if_exists(
                 &mut roots.omp,
@@ -88,6 +93,7 @@ impl SourceRoots {
             AgentKind::Pi => &self.pi,
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
+            AgentKind::Aside => &self.aside,
         }
     }
 }
@@ -118,6 +124,7 @@ pub fn discover_all(
                 AgentKind::Pi => pi::discover(root, AgentKind::Pi, opts)?,
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
+                AgentKind::Aside => aside::discover(root)?,
             };
             out.extend(discovered);
         }
@@ -135,6 +142,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Pi => pi::parse_file(&candidate.fs_path, AgentKind::Pi, opts),
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
+        AgentKind::Aside => aside::parse_file(candidate, opts),
     }
 }
 
@@ -312,6 +320,23 @@ pub fn strip_injected_system_blocks(raw: &str) -> String {
         }
     }
     cur.trim().to_string()
+}
+
+/// Open a SQLite database another application keeps open in WAL mode, without copying it.
+/// A plain read-only connection sees WAL content; only if that fails (e.g. no `-shm` and a
+/// read-only directory) fall back to a temp snapshot copy.
+pub fn open_live_sqlite(db_path: &Path) -> Result<rusqlite::Connection> {
+    if let Ok(conn) = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) && conn.busy_timeout(std::time::Duration::from_secs(5)).is_ok()
+        && conn
+            .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+            .is_ok()
+    {
+        return Ok(conn);
+    }
+    Ok(open_readonly_sqlite(db_path)?.conn)
 }
 
 /// Open another application's potentially WAL-mode SQLite database read-only without mutating its directory.

@@ -75,6 +75,7 @@ fn write_zst_lines(path: &Path, lines: &[serde_json::Value]) {
 }
 
 fn write_jsonl_lines(path: &Path, lines: &[serde_json::Value]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut out = String::new();
     for l in lines {
         out.push_str(&serde_json::to_string(l).unwrap());
@@ -812,7 +813,9 @@ fn hermes_db_and_json_sessions_are_parsed_without_harness_noise() {
         .unwrap();
     }
     write_json(
-        &home.join("sessions").join("session_20260502_210359_6013e7.json"),
+        &home
+            .join("sessions")
+            .join("session_20260502_210359_6013e7.json"),
         &json!({
             "session_id": "20260502_210359_6013e7",
             "platform": "discord",
@@ -831,7 +834,9 @@ fn hermes_db_and_json_sessions_are_parsed_without_harness_noise() {
         &json!({"messages": [{"role": "user", "content": "dup"}]}),
     );
     write_json(
-        &home.join("sessions").join("session_cron_abc_20260101_000000.json"),
+        &home
+            .join("sessions")
+            .join("session_cron_abc_20260101_000000.json"),
         &json!({"platform": "cron", "messages": [{"role": "user", "content": "cron"}]}),
     );
 
@@ -845,7 +850,12 @@ fn hermes_db_and_json_sessions_are_parsed_without_harness_noise() {
     ids.sort();
     assert_eq!(ids, ["20260502_210359_6013e7", "s_chat"]);
 
-    let by_id = |id: &str| cands.iter().find(|c| c.inner_id.as_deref() == Some(id)).unwrap();
+    let by_id = |id: &str| {
+        cands
+            .iter()
+            .find(|c| c.inner_id.as_deref() == Some(id))
+            .unwrap()
+    };
     let ParseOutcome::Session(s) = parse_candidate(by_id("s_chat"), &opts).unwrap() else {
         panic!("expected db session");
     };
@@ -855,7 +865,10 @@ fn hermes_db_and_json_sessions_are_parsed_without_harness_noise() {
     let texts: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
     assert_eq!(
         texts,
-        [(Role::User, "디스크 이름 바뀜"), (Role::Assistant, "확인했다")]
+        [
+            (Role::User, "디스크 이름 바뀜"),
+            (Role::Assistant, "확인했다")
+        ]
     );
     assert_eq!(
         s.turns[1].source_offset,
@@ -873,15 +886,19 @@ fn hermes_db_and_json_sessions_are_parsed_without_harness_noise() {
     assert!(raw.contains("\"role\": \"tool\"") && raw.contains("확인했다"));
     assert!(!raw.contains("디스크 이름 바뀜"));
 
-    let ParseOutcome::Session(j) =
-        parse_candidate(by_id("20260502_210359_6013e7"), &opts).unwrap()
+    let ParseOutcome::Session(j) = parse_candidate(by_id("20260502_210359_6013e7"), &opts).unwrap()
     else {
         panic!("expected json session");
     };
     assert_eq!(j.turns.len(), 2);
     assert_eq!(j.turns[1].text, "json only answer");
-    let raw = extract_raw_trace(AgentKind::Hermes, &j.source_path, &j.turns[1].source_offset, 0)
-        .unwrap();
+    let raw = extract_raw_trace(
+        AgentKind::Hermes,
+        &j.source_path,
+        &j.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
     assert!(raw.contains("\"role\": \"tool\"") && raw.contains("json only answer"));
 
     let with_cron = ParseOptions {
@@ -894,4 +911,247 @@ fn hermes_db_and_json_sessions_are_parsed_without_harness_noise() {
 fn write_json(path: &Path, value: &serde_json::Value) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, value.to_string()).unwrap();
+}
+
+fn aside_fixture(root: &Path) {
+    let acct = root.join("u").join("0");
+    {
+        std::fs::create_dir_all(&acct).unwrap();
+        let conn = Connection::open(acct.join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, trigger TEXT, ephemeral INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER, cwd TEXT);
+             INSERT INTO sessions VALUES ('ses_chat', NULL, 'ProctorU 확인', '{\"type\":\"user\",\"source\":\"sidepanel\"}', 0, 1793536840, 1793536999, '/Users/a/.aside/u/0');
+             INSERT INTO sessions VALUES ('ses_sub', 'ses_chat', 'sub', '{\"type\":\"subagent\"}', 0, 1793536841, 1793536842, '/x');
+             INSERT INTO sessions VALUES ('ses_routine', NULL, 'routine', '{\"type\":\"routine\",\"title\":\"r\"}', 0, 1793536843, 1793536844, '/x');
+             INSERT INTO sessions VALUES ('ses_ephem', NULL, 'tmp', '{\"type\":\"user\"}', 1, 1793536845, 1793536846, '/x');",
+        )
+        .unwrap();
+    }
+    let user = |text: &str, ts: i64| json!({"role": "user", "content": text, "timestamp": ts});
+    let asst = |blocks: serde_json::Value, ts: i64| json!({"role": "assistant", "content": blocks, "timestamp": ts, "stopReason": "stop"});
+    write_jsonl_lines(
+        &acct.join("sessions/2026-11-01_ses_chat/messages.jsonl"),
+        &[
+            json!({"role": "turn-lifecycle", "event": "started", "turnId": "t1", "timestamp": 1793536840000i64}),
+            json!({"role": "user-message-metadata", "attachments": [], "timestamp": 1793536840100i64}),
+            user("ProctorU 시험 예약 zeta_probe 찾아봐", 1793536840200),
+            json!({"role": "system-message", "kind": "memory_recall", "content": "<recalled_memories>MEMORY_NOISE</recalled_memories>", "metadata": {}, "timestamp": 1793536840300i64}),
+            asst(
+                json!([{"type": "thinking", "thinking": "THINKING_NOISE"}, {"type": "toolCall", "id": "c1", "name": "repl", "arguments": {"code": "TOOLCALL_NOISE"}}]),
+                1793536840400,
+            ),
+            json!({"role": "toolResult", "toolCallId": "c1", "toolName": "repl", "content": [{"type": "text", "text": "TOOLRESULT_NOISE"}], "timestamp": 1793536840500i64}),
+            asst(
+                json!([{"type": "thinking", "thinking": "THINKING_NOISE2"}, {"type": "text", "text": "예약 가능한 시험은 alpha_exam 입니다."}]),
+                1793536840600,
+            ),
+            json!({"role": "steering", "id": "s1", "content": "추가 지시 beta_steer", "attachments": [], "timestamp": 1793536840650i64}),
+            json!({"role": "user", "content": "추가 지시 beta_steer", "metadata": {"steer": true, "steeringMessageId": "s1"}, "timestamp": 1793536840651i64}),
+            json!({"role": "compaction", "summary": "COMPACTION_NOISE", "timestamp": 1793536840700i64}),
+            asst(
+                json!([{"type": "thinking", "thinking": "only thinking"}]),
+                1793536840800,
+            ),
+            json!({"role": "system-message", "kind": "routine_trigger", "content": "This turn was triggered by a heartbeat routine.", "metadata": {}, "timestamp": 1793536840900i64}),
+            asst(
+                json!([{"type": "text", "text": "HEARTBEAT_NOISE"}]),
+                1793536841000,
+            ),
+            user("다음 질문 gamma_next", 1793536841100),
+            asst(
+                json!([{"type": "text", "text": "다음 답 delta_reply"}]),
+                1793536841200,
+            ),
+        ],
+    );
+    write_jsonl_lines(
+        &acct.join("sessions/2026-11-01_ses_sub/messages.jsonl"),
+        &[
+            user("subagent work", 1793536841000),
+            asst(json!([{"type": "text", "text": "sub done"}]), 1793536841100),
+        ],
+    );
+    write_jsonl_lines(
+        &acct.join("sessions/2026-11-01_ses_routine/messages.jsonl"),
+        &[
+            user("scheduled check", 1793536842000),
+            asst(
+                json!([{"type": "text", "text": "routine done"}]),
+                1793536842100,
+            ),
+        ],
+    );
+    write_jsonl_lines(
+        &acct.join("sessions/2026-11-01_ses_ephem/messages.jsonl"),
+        &[
+            user("ephemeral q", 1793536843000),
+            asst(
+                json!([{"type": "text", "text": "ephemeral a"}]),
+                1793536843100,
+            ),
+        ],
+    );
+    // Not in state.db: heuristics apply (forked worker prompt => subagent).
+    write_jsonl_lines(
+        &acct.join("sessions/2026-11-02_ses_nodb/messages.jsonl"),
+        &[
+            user("db 없는 일반 세션", 1793536844000),
+            asst(json!([{"type": "text", "text": "ok nodb"}]), 1793536844100),
+        ],
+    );
+    write_jsonl_lines(
+        &acct.join("sessions/2026-11-02_ses_fork/messages.jsonl"),
+        &[
+            user("parent question replayed into the fork", 1793536844900),
+            asst(
+                json!([{"type": "text", "text": "parent answer replayed"}]),
+                1793536844950,
+            ),
+            user(
+                "<system_message>\nSTOP. READ THIS FIRST.\nFrom now on, you are a forked worker process.\n</system_message>",
+                1793536845000,
+            ),
+            asst(
+                json!([{"type": "text", "text": "fork reply"}]),
+                1793536845100,
+            ),
+        ],
+    );
+    // Empty dialogue (lifecycle only) must be skipped, not fail.
+    write_jsonl_lines(
+        &acct.join("sessions/2026-11-02_ses_empty/messages.jsonl"),
+        &[
+            json!({"role": "turn-lifecycle", "event": "started", "turnId": "t", "timestamp": 1793536846000i64}),
+        ],
+    );
+}
+
+fn aside_ids(roots: &SourceRoots, opts: &ParseOptions) -> Vec<String> {
+    let mut ids: Vec<String> = discover_all(roots, None, opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s.session_id),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn aside_keeps_only_user_and_assistant_text() {
+    let dir = TempDir::new().unwrap();
+    aside_fixture(dir.path());
+    let roots = SourceRoots {
+        aside: vec![dir.path().join("u")],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    let chat = cands
+        .iter()
+        .find(|c| c.inner_id.as_deref() == Some("ses_chat") || c.source_path.contains("ses_chat"))
+        .expect("chat session discovered");
+    let ParseOutcome::Session(s) = parse_candidate(chat, &opts).unwrap() else {
+        panic!("expected aside session");
+    };
+    assert_eq!(s.agent, AgentKind::Aside);
+    assert_eq!(s.session_id, "ses_chat");
+    assert_eq!(s.title.as_deref(), Some("ProctorU 확인"));
+    assert_eq!(s.parent_session_id, None);
+    assert!(!s.is_subagent);
+    assert_eq!(s.started_at.as_deref(), Some("2026-11-01T12:40:40.000Z"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "ProctorU 시험 예약 zeta_probe 찾아봐"),
+            (Role::Assistant, "예약 가능한 시험은 alpha_exam 입니다."),
+            (Role::User, "추가 지시 beta_steer"),
+            (Role::User, "다음 질문 gamma_next"),
+            (Role::Assistant, "다음 답 delta_reply"),
+        ]
+    );
+    assert_eq!(
+        s.turns[1].source_offset,
+        SourceOffset::Lines {
+            start_line: 7,
+            end_line: 7
+        }
+    );
+    let mirror = render_mirror(&s).content;
+    for noise in [
+        "THINKING_NOISE",
+        "TOOLCALL_NOISE",
+        "TOOLRESULT_NOISE",
+        "MEMORY_NOISE",
+        "COMPACTION_NOISE",
+        "HEARTBEAT_NOISE",
+    ] {
+        assert!(!mirror.contains(noise), "{noise} leaked into mirror");
+    }
+    // Raw trace of an assistant turn still exposes the tool calls for debugging.
+    let raw = extract_raw_trace(
+        AgentKind::Aside,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        3,
+    )
+    .unwrap();
+    assert!(raw.contains("TOOLCALL_NOISE") && raw.contains("alpha_exam"));
+}
+
+#[test]
+fn aside_classifies_subagent_routine_and_ephemeral_sessions() {
+    let dir = TempDir::new().unwrap();
+    aside_fixture(dir.path());
+    let roots = SourceRoots {
+        aside: vec![dir.path().join("u")],
+        ..Default::default()
+    };
+    assert_eq!(
+        aside_ids(&roots, &ParseOptions::default()),
+        ["ses_chat", "ses_nodb"]
+    );
+    let subs = ParseOptions {
+        include_subagents: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        aside_ids(&roots, &subs),
+        ["ses_chat", "ses_fork", "ses_nodb", "ses_sub"]
+    );
+    let eph = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        aside_ids(&roots, &eph),
+        ["ses_chat", "ses_ephem", "ses_nodb", "ses_routine"]
+    );
+}
+
+#[test]
+fn aside_roots_resolve_from_home_account_or_sessions_dir() {
+    let dir = TempDir::new().unwrap();
+    aside_fixture(dir.path());
+    let opts = ParseOptions::default();
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("u"),
+        dir.path().join("u/0"),
+        dir.path().join("u/0/sessions"),
+    ] {
+        let roots = SourceRoots {
+            aside: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            aside_ids(&roots, &opts),
+            ["ses_chat", "ses_nodb"],
+            "root {}",
+            root.display()
+        );
+    }
 }
