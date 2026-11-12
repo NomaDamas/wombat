@@ -365,6 +365,24 @@ fn cli_end_to_end_autorag_datasource_contract_and_incremental_append() {
     assert_eq!(inc_json["written"], 1);
     assert_eq!(inc_json["total_messages"], 9);
 
+    // minsync must re-index only the appended file, not the other three sessions.
+    let idx = &inc_json["indexed"];
+    assert_eq!(idx["files_processed"], 1, "{idx}");
+    assert_eq!(idx["already_up_to_date"], false);
+    assert!(idx["chunks_added"].as_u64().unwrap() + idx["chunks_updated"].as_u64().unwrap() >= 1);
+    let again_out = wombat_cmd()
+        .args(common_args)
+        .args(["index", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let again: Value = serde_json::from_slice(&again_out).unwrap();
+    assert_eq!(again["already_up_to_date"], true, "{again}");
+    assert_eq!(again["files_processed"], 0);
+    assert_eq!(again["embedded_texts"], 0);
+
     let delta_hits_raw = wombat_cmd()
         .args(common_args)
         .args([
