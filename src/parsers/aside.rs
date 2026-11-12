@@ -215,10 +215,10 @@ pub fn parse_file(candidate: &SourceCandidate, opts: &ParseOptions) -> Result<Pa
                     offset,
                 );
             }
-            "system-message" => {
-                if v.get("kind").and_then(Value::as_str) == Some("routine_trigger") {
-                    in_routine_turn = true;
-                }
+            "system-message"
+                if v.get("kind").and_then(Value::as_str) == Some("routine_trigger") =>
+            {
+                in_routine_turn = true;
             }
             // `steering` duplicates the `user` record written when the steer is delivered;
             // tool results, lifecycle, metadata and compaction summaries are not dialogue.
