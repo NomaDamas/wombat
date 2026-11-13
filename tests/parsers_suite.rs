@@ -1155,3 +1155,195 @@ fn aside_roots_resolve_from_home_account_or_sessions_dir() {
         );
     }
 }
+
+fn gemini_msg_user(id: &str, text: &str, ts: &str) -> serde_json::Value {
+    json!({"id": id, "timestamp": ts, "type": "user", "content": [{"text": text}]})
+}
+
+fn gemini_msg_assistant(id: &str, text: &str, ts: &str) -> serde_json::Value {
+    json!({
+        "id": id, "timestamp": ts, "type": "gemini", "content": text, "model": "gemini-3.5-flash",
+        "thoughts": [{"subject": "GEMINI_THOUGHT_NOISE", "description": "GEMINI_THOUGHT_NOISE", "timestamp": ts}],
+        "toolCalls": [{"id": "t1", "name": "run_shell_command", "args": {"command": "GEMINI_TOOLCALL_NOISE"}, "result": [{"functionResponse": {"response": {"output": "GEMINI_TOOLRESULT_NOISE"}}}], "status": "success"}]
+    })
+}
+
+fn gemini_fixture(root: &Path) -> std::path::PathBuf {
+    let chats = root.join("tmp").join("proj").join("chats");
+    std::fs::create_dir_all(&chats).unwrap();
+    let path = chats.join("session-2026-11-05T01-02-aaaa1111.jsonl");
+    write_jsonl_lines(
+        &path,
+        &[
+            json!({"sessionId": "aaaa1111-0000-0000-0000-000000000000", "projectHash": "h", "startTime": "2026-11-05T01:02:03.000Z", "lastUpdated": "2026-11-05T01:02:03.000Z", "kind": "main", "directories": ["/Users/a/proj"]}),
+            gemini_msg_user(
+                "u0",
+                "<session_context>\nThis is the Gemini CLI. GEMINI_CONTEXT_NOISE\n</session_context>",
+                "2026-11-05T01:02:03.100Z",
+            ),
+            gemini_msg_user("u1", "alpha_gemini 가 뭐야?", "2026-11-05T01:02:04.000Z"),
+            gemini_msg_assistant(
+                "g1",
+                "alpha_gemini는 테스트 용어입니다.",
+                "2026-11-05T01:02:05.000Z",
+            ),
+            json!({"id": "i1", "timestamp": "2026-11-05T01:02:05.500Z", "type": "info", "content": "GEMINI_INFO_NOISE"}),
+            gemini_msg_user("u2", "/help", "2026-11-05T01:02:06.000Z"),
+            gemini_msg_user(
+                "u3",
+                "rewound_question beta_gemini",
+                "2026-11-05T01:02:07.000Z",
+            ),
+            gemini_msg_assistant("g2", "rewound_answer", "2026-11-05T01:02:08.000Z"),
+            json!({"$rewindTo": "u3"}),
+            gemini_msg_user("u3b", "gamma_gemini 다시 질문", "2026-11-05T01:02:09.000Z"),
+            // tool-only turn: no visible text
+            json!({"id": "g3", "timestamp": "2026-11-05T01:02:10.000Z", "type": "gemini", "content": "", "toolCalls": [{"id": "t2", "name": "read_file", "args": {}}]}),
+            // later message arrives as a patch that fills in the final text
+            json!({"id": "g4", "timestamp": "2026-11-05T01:02:11.000Z", "type": "gemini", "content": "초안", "toolCalls": []}),
+            json!({"$patch": {"id": "g4", "content": "delta_gemini 최종 답변"}}),
+            json!({"$set": {"lastUpdated": "2026-11-05T01:02:11.000Z", "summary": "ignored summary"}}),
+        ],
+    );
+    path
+}
+
+#[test]
+fn gemini_keeps_only_user_and_assistant_text_and_honors_rewind_patch() {
+    let dir = TempDir::new().unwrap();
+    let path = gemini_fixture(dir.path());
+    let roots = SourceRoots {
+        gemini: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected gemini session");
+    };
+    assert_eq!(s.agent, AgentKind::Gemini);
+    assert_eq!(s.session_id, "aaaa1111-0000-0000-0000-000000000000");
+    assert_eq!(s.cwd.as_deref(), Some("/Users/a/proj"));
+    assert_eq!(s.started_at.as_deref(), Some("2026-11-05T01:02:03.000Z"));
+    assert_eq!(s.source_path, path.to_string_lossy());
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "alpha_gemini 가 뭐야?"),
+            (Role::Assistant, "alpha_gemini는 테스트 용어입니다."),
+            (Role::User, "gamma_gemini 다시 질문"),
+            (Role::Assistant, "delta_gemini 최종 답변"),
+        ]
+    );
+    // Offsets point at the raw line holding the (final) message record.
+    assert_eq!(
+        s.turns[0].source_offset,
+        SourceOffset::Lines {
+            start_line: 3,
+            end_line: 3
+        }
+    );
+    let mirror = render_mirror(&s).content;
+    for noise in [
+        "GEMINI_CONTEXT_NOISE",
+        "GEMINI_THOUGHT_NOISE",
+        "GEMINI_TOOLCALL_NOISE",
+        "GEMINI_TOOLRESULT_NOISE",
+        "GEMINI_INFO_NOISE",
+        "rewound_question",
+        "rewound_answer",
+        "ignored summary",
+    ] {
+        assert!(!mirror.contains(noise), "{noise} leaked into mirror");
+    }
+    let raw = extract_raw_trace(
+        AgentKind::Gemini,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("GEMINI_TOOLCALL_NOISE"));
+}
+
+#[test]
+fn gemini_reads_set_messages_snapshots_and_skips_subagent_kind() {
+    let dir = TempDir::new().unwrap();
+    let chats = dir.path().join("tmp/proj/chats");
+    write_jsonl_lines(
+        &chats.join("session-2026-11-06T00-00-bbbb2222.jsonl"),
+        &[
+            json!({"sessionId": "bbbb2222", "projectHash": "h", "startTime": "2026-11-06T00:00:00.000Z", "lastUpdated": "2026-11-06T00:00:00.000Z", "kind": "main"}),
+            json!({"$set": {"messages": [
+                gemini_msg_user("u1", "snapshot_question", "2026-11-06T00:00:01.000Z"),
+                gemini_msg_assistant("g1", "snapshot_answer", "2026-11-06T00:00:02.000Z"),
+            ], "lastUpdated": "2026-11-06T00:00:02.000Z"}}),
+        ],
+    );
+    write_jsonl_lines(
+        &chats.join("session-2026-11-06T00-01-cccc3333.jsonl"),
+        &[
+            json!({"sessionId": "cccc3333", "projectHash": "h", "startTime": "2026-11-06T00:01:00.000Z", "lastUpdated": "2026-11-06T00:01:00.000Z", "kind": "subagent"}),
+            gemini_msg_user("u1", "worker task", "2026-11-06T00:01:01.000Z"),
+            gemini_msg_assistant("g1", "worker done", "2026-11-06T00:01:02.000Z"),
+        ],
+    );
+    let roots = SourceRoots {
+        gemini: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let ids = |opts: &ParseOptions| {
+        let mut v: Vec<String> = discover_all(&roots, None, opts)
+            .unwrap()
+            .iter()
+            .filter_map(|c| match parse_candidate(c, opts).unwrap() {
+                ParseOutcome::Session(s) => {
+                    let first = s.turns[0].text.clone();
+                    Some(format!("{}:{}", s.session_id, first))
+                }
+                ParseOutcome::Skipped { .. } => None,
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        ids(&ParseOptions::default()),
+        ["bbbb2222:snapshot_question"]
+    );
+    let subs = ParseOptions {
+        include_subagents: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        ids(&subs),
+        ["bbbb2222:snapshot_question", "cccc3333:worker task"]
+    );
+}
+
+#[test]
+fn gemini_roots_resolve_from_home_tmp_or_chats_dir() {
+    let dir = TempDir::new().unwrap();
+    gemini_fixture(dir.path());
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("tmp"),
+        dir.path().join("tmp/proj"),
+        dir.path().join("tmp/proj/chats"),
+    ] {
+        let roots = SourceRoots {
+            gemini: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}

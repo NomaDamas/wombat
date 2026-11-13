@@ -531,3 +531,91 @@ fn cli_end_to_end_hermes_and_aside_sources() {
             .contains("HERMES_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// Live pipeline for Gemini CLI chat logs, including `$rewindTo` / `$patch` replay.
+#[test]
+fn cli_end_to_end_gemini_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let home = tmp.path().join("gemini");
+    let chats = home.join("tmp/proj/chats");
+    std::fs::create_dir_all(&chats).unwrap();
+    let user = |id: &str, t: &str| json!({"id": id, "timestamp": "2026-11-05T01:02:04.000Z", "type": "user", "content": [{"text": t}]});
+    let lines = [
+        json!({"sessionId": "gem-e2e-1", "projectHash": "h", "startTime": "2026-11-05T01:02:03.000Z", "lastUpdated": "2026-11-05T01:02:03.000Z", "kind": "main", "directories": ["/Users/a/proj"]}),
+        user("u1", "gemini_zephyr_probe 설명해줘"),
+        json!({"id": "g1", "timestamp": "2026-11-05T01:02:05.000Z", "type": "gemini", "content": "gemini_zephyr_probe는 검증용 용어입니다.",
+               "thoughts": [{"subject": "GEMINI_E2E_THOUGHT_NEVER_INDEX"}],
+               "toolCalls": [{"id": "t1", "name": "shell", "args": {"command": "GEMINI_E2E_TOOLCALL_NEVER_INDEX"}}]}),
+        user("u2", "gemini_rewound_text_never_indexed"),
+        json!({"$rewindTo": "u2"}),
+        json!({"id": "g2", "timestamp": "2026-11-05T01:02:09.000Z", "type": "gemini", "content": "초안"}),
+        json!({"$patch": {"id": "g2", "content": "gemini_final_patched_answer"}}),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(chats.join("session-2026-11-05T01-02-gemE2E01.jsonl"), body).unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("gemini={}", home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 1);
+    assert_eq!(sync["total_messages"], 3);
+
+    let search = |q: &str, agent: Option<&str>| -> Vec<Value> {
+        let mut extra = vec!["search", "keyword", q, "--json"];
+        if let Some(a) = agent {
+            extra.extend(["--agent", a]);
+        }
+        serde_json::from_slice(&run(&extra)).unwrap()
+    };
+    let hits = search("gemini_zephyr_probe", Some("gemini"));
+    assert_eq!(hits[0]["agent"], "gemini");
+    assert_eq!(hits[0]["session_id"], "gem-e2e-1");
+    assert_eq!(hits[0]["cwd"], "/Users/a/proj");
+    assert!(!search("gemini_final_patched_answer", Some("gemini")).is_empty());
+    for noise in [
+        "GEMINI_E2E_THOUGHT_NEVER_INDEX",
+        "GEMINI_E2E_TOOLCALL_NEVER_INDEX",
+        "gemini_rewound_text_never_indexed",
+    ] {
+        assert!(
+            search(noise, None)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value = serde_json::from_slice(&run(&[
+        "trace",
+        "gemini:gem-e2e-1",
+        "--turn",
+        "2",
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("GEMINI_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}
