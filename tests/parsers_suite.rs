@@ -2459,3 +2459,168 @@ fn iflow_skips_tool_sidechain_and_ephemeral_and_stays_separate_from_claude_code(
     let c = discover_all(&cc, None, &opts).unwrap();
     assert!(c.iter().all(|c| c.agent == AgentKind::ClaudeCode));
 }
+
+#[test]
+fn codebuddy_real_recorded_session_keeps_user_and_assistant_text_only() {
+    // File copied from a session the real CodeBuddy Code 2.184.0 TUI wrote, incl. a real tool
+    // turn: `function_call` + `function_call_result` records between the two user/assistant messages.
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("projects/private-tmp-qa-home-cb-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let id = "01a1d537-0d4e-7348-ad7b-f8c411ab16f9";
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codebuddy_real_session.jsonl"),
+        proj.join(format!("{id}.jsonl")),
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        codebuddy: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture cwd is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected codebuddy session");
+    };
+    assert_eq!(s.agent, AgentKind::Codebuddy);
+    assert_eq!(s.session_id, id);
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-cb/proj"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert_eq!(got[0], (Role::User, "qa_cb_gamma 두번째 질문"));
+    assert_eq!(
+        got[2],
+        (Role::User, "TOOLTEST qa_cb_delta 셸로 echo 실행해줘")
+    );
+    assert!(got[1].1.starts_with("MOCKREPLY") && got[3].1.starts_with("MOCKREPLY"));
+    let mirror = render_mirror(&s).content;
+    assert!(
+        !mirror.contains("TOOLRESULT_MARKER"),
+        "function_call arguments leaked"
+    );
+    assert!(
+        !mirror.contains("Invalid arguments for Read"),
+        "function_call_result leaked"
+    );
+    // Trace of the final assistant turn reaches the real function_call records.
+    let raw = extract_raw_trace(
+        AgentKind::Codebuddy,
+        &s.source_path,
+        &s.turns[3].source_offset,
+        3,
+    )
+    .unwrap();
+    assert!(
+        raw.contains("function_call") && raw.contains("TOOLRESULT_MARKER"),
+        "{raw}"
+    );
+}
+
+#[test]
+fn codebuddy_skips_tool_snapshot_summary_and_ephemeral_records_and_accepts_string_content() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("projects/-Users-a-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let msg = |id: &str, role: &str, content: serde_json::Value| json!({"id": id, "type": "message", "role": role, "timestamp": "1794578348516", "sessionId": "cb-s1", "cwd": "/Users/a/proj", "content": content});
+    write_jsonl_lines(
+        &proj.join("cb-s1.jsonl"),
+        &[
+            msg(
+                "1",
+                "user",
+                json!([{"type": "input_text", "text": "codebuddy_q1"}]),
+            ),
+            json!({"type": "file-history-snapshot", "messageId": "1", "snapshot": {"CODEBUDDY_SNAPSHOT_NOISE": 1}}),
+            json!({"type": "session-meta", "id": "m", "sessionId": "cb-s1", "timestamp": "1794578348517", "contextWindow": {"id": "x"}}),
+            json!({"type": "function_call", "id": "f", "callId": "c", "name": "Bash", "arguments": "CODEBUDDY_TOOLCALL_NOISE"}),
+            json!({"type": "function_call_result", "callId": "c", "name": "Bash", "status": "completed", "output": "CODEBUDDY_TOOLRESULT_NOISE"}),
+            msg(
+                "2",
+                "assistant",
+                json!([{"type": "reasoning", "text": "CODEBUDDY_REASONING_NOISE"}, {"type": "output_text", "text": "codebuddy_a1"}]),
+            ),
+            json!({"type": "summary", "id": "s", "summary": "CODEBUDDY_SUMMARY_NOISE"}),
+            msg("3", "user", json!("plain string question codebuddy_q2")),
+            msg(
+                "4",
+                "system",
+                json!([{"type": "input_text", "text": "CODEBUDDY_SYSTEM_NOISE"}]),
+            ),
+        ],
+    );
+    let tmp = dir.path().join("projects/-tmp-x");
+    std::fs::create_dir_all(&tmp).unwrap();
+    write_jsonl_lines(
+        &tmp.join("cb-s2.jsonl"),
+        &[
+            json!({"id": "1", "type": "message", "role": "user", "sessionId": "cb-s2", "timestamp": "1794578348516", "cwd": "/tmp/scratch", "content": [{"type": "input_text", "text": "tmp q"}]}),
+        ],
+    );
+    let roots = SourceRoots {
+        codebuddy: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1, "tmp-cwd session must be skipped");
+    let s = &sessions[0];
+    assert_eq!(s.session_id, "cb-s1");
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "codebuddy_q1"),
+            (Role::Assistant, "codebuddy_a1"),
+            (Role::User, "plain string question codebuddy_q2"),
+        ]
+    );
+    let mirror = render_mirror(s).content;
+    for n in [
+        "CODEBUDDY_SNAPSHOT_NOISE",
+        "CODEBUDDY_TOOLCALL_NOISE",
+        "CODEBUDDY_TOOLRESULT_NOISE",
+        "CODEBUDDY_REASONING_NOISE",
+        "CODEBUDDY_SUMMARY_NOISE",
+        "CODEBUDDY_SYSTEM_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+}
+
+#[test]
+fn codebuddy_roots_accept_config_dir_or_projects_dir() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("projects/-Users-a-p");
+    std::fs::create_dir_all(&proj).unwrap();
+    write_jsonl_lines(
+        &proj.join("s.jsonl"),
+        &[
+            json!({"id": "1", "type": "message", "role": "user", "sessionId": "s", "timestamp": "1794578348516", "cwd": "/Users/a/p", "content": [{"type": "input_text", "text": "hi"}]}),
+        ],
+    );
+    for root in [dir.path().to_path_buf(), dir.path().join("projects")] {
+        let roots = SourceRoots {
+            codebuddy: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}
