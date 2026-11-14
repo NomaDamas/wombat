@@ -1178,3 +1178,92 @@ fn cli_end_to_end_continue_source() {
             .contains("CONTINUE_E2E_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// iFlow CLI writes Claude-Code-shaped logs but must index as its own agent beside Claude Code.
+#[test]
+fn cli_end_to_end_iflow_source_stays_separate_from_claude_code() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let iflow_home = tmp.path().join("iflow");
+    let cc_root = tmp.path().join("claude/proj-a");
+    std::fs::create_dir_all(iflow_home.join("projects/-Users-a-proj")).unwrap();
+    std::fs::create_dir_all(&cc_root).unwrap();
+    let mk = |path: &Path, sid: &str, user: &str, answer: &str, noise: &str| {
+        let rec = |uuid: &str, ty: &str, content: Value| {
+            json!({"uuid": uuid, "sessionId": sid, "timestamp": "2026-11-13T00:00:00.000Z", "type": ty,
+                   "isSidechain": false, "cwd": "/Users/a/proj", "message": {"role": ty, "content": content}})
+        };
+        let lines = [
+            rec("1", "user", json!(user)),
+            rec(
+                "2",
+                "assistant",
+                json!([{"type": "tool_use", "id": "t", "name": "bash", "input": {"command": noise}}, {"type": "text", "text": answer}]),
+            ),
+        ];
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(path, body).unwrap();
+    };
+    mk(
+        &iflow_home.join("projects/-Users-a-proj/session-if-e2e.jsonl"),
+        "session-if-e2e",
+        "iflow_zephyr_probe 설명해줘",
+        "iflow_zephyr_probe는 검증용입니다.",
+        "IFLOW_E2E_TOOL_NEVER_INDEX",
+    );
+    mk(
+        &cc_root.join("cc-e2e.jsonl"),
+        "cc-e2e",
+        "claude_zephyr_probe 설명해줘",
+        "claude_zephyr_probe는 검증용입니다.",
+        "CC_E2E_TOOL_NEVER_INDEX",
+    );
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("iflow={}", iflow_home.display()),
+        "--source",
+        &format!("claude-code={}", tmp.path().join("claude").display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 2);
+    assert_eq!(sync["total_messages"], 4);
+    let search = |q: &str, agent: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&["search", "keyword", q, "--agent", agent, "--json"])).unwrap()
+    };
+    let i = search("iflow_zephyr_probe", "iflow");
+    assert_eq!(i[0]["agent"], "iflow");
+    assert_eq!(i[0]["session_id"], "session-if-e2e");
+    assert!(i.iter().all(|h| h["agent"] == "iflow"));
+    let c = search("claude_zephyr_probe", "claude-code");
+    assert_eq!(c[0]["agent"], "claude-code");
+    assert!(c.iter().all(|h| h["agent"] == "claude-code"));
+    for (noise, agent) in [
+        ("IFLOW_E2E_TOOL_NEVER_INDEX", "iflow"),
+        ("CC_E2E_TOOL_NEVER_INDEX", "claude-code"),
+    ] {
+        assert!(
+            search(noise, agent)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+}

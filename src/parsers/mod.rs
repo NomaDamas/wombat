@@ -41,6 +41,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub iflow: Vec<PathBuf>,
     pub continue_cli: Vec<PathBuf>,
     pub copilot: Vec<PathBuf>,
     pub crush: Vec<PathBuf>,
@@ -120,6 +121,9 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".continue"));
             push_if_exists(&mut roots.continue_cli, continue_cli_home);
 
+            // iFlow CLI
+            push_if_exists(&mut roots.iflow, h.join(".iflow").join("projects"));
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -141,6 +145,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Iflow => &self.iflow,
             AgentKind::Continue => &self.continue_cli,
             AgentKind::Copilot => &self.copilot,
             AgentKind::Crush => &self.crush,
@@ -149,6 +154,12 @@ impl SourceRoots {
             AgentKind::Gemini => &self.gemini,
         }
     }
+}
+
+/// An iFlow root may be `~/.iflow` or its `projects/` dir.
+fn iflow_projects(root: &Path) -> PathBuf {
+    let p = root.join("projects");
+    if p.is_dir() { p } else { root.to_path_buf() }
 }
 
 fn push_if_exists(vec: &mut Vec<PathBuf>, p: PathBuf) {
@@ -178,6 +189,9 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Iflow => {
+                    claude_code::discover_as(AgentKind::Iflow, &iflow_projects(root), opts)?
+                }
                 AgentKind::Continue => continue_cli::discover(root)?,
                 AgentKind::Copilot => copilot::discover(root)?,
                 AgentKind::Crush => crush::discover(root, opts)?,
@@ -202,6 +216,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Iflow => claude_code::parse_file_as(AgentKind::Iflow, &candidate.fs_path, opts),
         AgentKind::Continue => continue_cli::parse_file(&candidate.fs_path, opts),
         AgentKind::Copilot => copilot::parse_file(&candidate.fs_path, opts),
         AgentKind::Crush => crush::parse_candidate(candidate, opts),

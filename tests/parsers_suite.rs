@@ -2340,3 +2340,122 @@ fn continue_roots_accept_home_or_sessions_dir() {
         );
     }
 }
+
+#[test]
+fn iflow_real_recorded_session_is_read_as_its_own_agent() {
+    // File copied from a session the real iFlow CLI 0.5.19 wrote (Claude-Code-shaped records:
+    // uuid/parentUuid/sessionId/isSidechain + `message.content`).
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("projects/-private-tmp-qa-home-iflow-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let id = "session-8a837214-baa6-46d4-aaf0-819f14c178b8";
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/iflow_real_session.jsonl"),
+        proj.join(format!("{id}.jsonl")),
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        iflow: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture cwd is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    assert!(cands[0].item_key.starts_with("iflow/"));
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected iflow session");
+    };
+    assert_eq!(s.agent, AgentKind::Iflow);
+    assert_eq!(s.catalog_key(), format!("iflow:{id}"));
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-iflow/proj"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0], (Role::User, "qa_iflow_alpha 라는 단어를 설명해줘"));
+    assert!(got[1].1.starts_with("MOCKREPLY"));
+}
+
+#[test]
+fn iflow_skips_tool_sidechain_and_ephemeral_and_stays_separate_from_claude_code() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("projects/-Users-a-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let rec = |uuid: &str, ty: &str, content: serde_json::Value, extra: serde_json::Value| {
+        let mut v = json!({"uuid": uuid, "sessionId": "session-if1", "timestamp": "2026-11-13T00:00:00.000Z", "type": ty, "isSidechain": false, "cwd": "/Users/a/proj", "message": {"role": ty, "content": content}});
+        if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+        }
+        v
+    };
+    write_jsonl_lines(
+        &proj.join("session-if1.jsonl"),
+        &[
+            rec("1", "user", json!("iflow_q1"), json!({})),
+            rec(
+                "2",
+                "assistant",
+                json!([{"type": "thinking", "thinking": "IFLOW_THINKING_NOISE"}, {"type": "tool_use", "id": "t", "name": "bash", "input": {"command": "IFLOW_TOOLCALL_NOISE"}}, {"type": "text", "text": "iflow_a1"}]),
+                json!({}),
+            ),
+            rec(
+                "3",
+                "user",
+                json!([{"type": "tool_result", "tool_use_id": "t", "content": "IFLOW_TOOLRESULT_NOISE"}]),
+                json!({}),
+            ),
+            rec(
+                "4",
+                "user",
+                json!("IFLOW_SIDECHAIN_NOISE"),
+                json!({"isSidechain": true}),
+            ),
+        ],
+    );
+    let tmp = dir.path().join("projects/-tmp-x");
+    std::fs::create_dir_all(&tmp).unwrap();
+    write_jsonl_lines(
+        &tmp.join("session-if2.jsonl"),
+        &[
+            json!({"uuid": "1", "sessionId": "session-if2", "timestamp": "2026-11-13T00:00:00.000Z", "type": "user", "isSidechain": false, "cwd": "/tmp/scratch", "message": {"role": "user", "content": "tmp q"}}),
+        ],
+    );
+    let roots = SourceRoots {
+        iflow: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1, "tmp-cwd session must be skipped");
+    let s = &sessions[0];
+    assert_eq!(s.agent, AgentKind::Iflow);
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [(Role::User, "iflow_q1"), (Role::Assistant, "iflow_a1")]
+    );
+    let mirror = render_mirror(s).content;
+    for n in [
+        "IFLOW_THINKING_NOISE",
+        "IFLOW_TOOLCALL_NOISE",
+        "IFLOW_TOOLRESULT_NOISE",
+        "IFLOW_SIDECHAIN_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+    // The same files read through the claude-code source must stay claude-code.
+    let cc = SourceRoots {
+        claude_code: vec![dir.path().join("projects")],
+        ..Default::default()
+    };
+    let c = discover_all(&cc, None, &opts).unwrap();
+    assert!(c.iter().all(|c| c.agent == AgentKind::ClaudeCode));
+}
