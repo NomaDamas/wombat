@@ -1684,3 +1684,108 @@ fn cli_end_to_end_goose_source() {
             .contains("GOOSE_E2E_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// Live pipeline for Droid (Factory) sessions through real minsync.
+#[test]
+fn cli_end_to_end_droid_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let home = tmp.path().join("factory");
+    let proj = home.join("sessions/-Users-a-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let msg = |id: &str, role: &str, content: Value| json!({"type": "message", "id": id, "timestamp": "2026-11-13T14:26:28.034Z", "message": {"role": role, "content": content}});
+    let lines = [
+        json!({"type": "session_start", "id": "droid-e2e-1", "title": "droid chat", "cwd": "/Users/a/proj", "version": "2"}),
+        msg(
+            "context-1",
+            "user",
+            json!([{"type": "text", "text": "<system-reminder>DROID_E2E_CONTEXT_NEVER_INDEX</system-reminder>"}]),
+        ),
+        msg(
+            "u1",
+            "user",
+            json!([{"type": "text", "text": "droid_zephyr_probe 설명해줘"}]),
+        ),
+        msg(
+            "a0",
+            "assistant",
+            json!([{"type": "tool_use", "id": "t", "name": "Execute", "input": {"command": "DROID_E2E_TOOLCALL_NEVER_INDEX"}}]),
+        ),
+        msg(
+            "tr",
+            "user",
+            json!([{"type": "tool_result", "tool_use_id": "t", "content": "DROID_E2E_TOOLRESULT_NEVER_INDEX"}]),
+        ),
+        msg(
+            "a1",
+            "assistant",
+            json!([{"type": "text", "text": "droid_zephyr_probe는 검증용 용어입니다."}]),
+        ),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(proj.join("droid-e2e-1.jsonl"), body).unwrap();
+    std::fs::write(proj.join("droid-e2e-1.settings.json"), "{}").unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("droid={}", home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 1);
+    assert_eq!(sync["total_messages"], 2);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&[
+            "search", "keyword", q, "--agent", "droid", "--json",
+        ]))
+        .unwrap()
+    };
+    let hits = search("droid_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "droid");
+    assert_eq!(hits[0]["session_id"], "droid-e2e-1");
+    assert_eq!(hits[0]["title"], "droid chat");
+    for noise in [
+        "DROID_E2E_CONTEXT_NEVER_INDEX",
+        "DROID_E2E_TOOLCALL_NEVER_INDEX",
+        "DROID_E2E_TOOLRESULT_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value = serde_json::from_slice(&run(&[
+        "trace",
+        "droid:droid-e2e-1",
+        "--turn",
+        "2",
+        "--context",
+        "3",
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("DROID_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}
