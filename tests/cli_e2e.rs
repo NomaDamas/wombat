@@ -748,3 +748,99 @@ fn cli_end_to_end_kilo_source_stays_separate_from_opencode() {
         );
     }
 }
+
+/// Live pipeline for Qwen Code sessions through real minsync.
+#[test]
+fn cli_end_to_end_qwen_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let home = tmp.path().join("qwen");
+    let chats = home.join("projects/-Users-a-proj/chats");
+    std::fs::create_dir_all(&chats).unwrap();
+    let rec = |uuid: &str, typ: &str, role: &str, parts: Value| {
+        json!({"uuid": uuid, "sessionId": "qwen-e2e-1", "timestamp": "2026-11-13T00:00:00.000Z",
+               "type": typ, "cwd": "/Users/a/proj", "version": "0.27.3", "provenance": "real_user",
+               "message": {"role": role, "parts": parts}})
+    };
+    let lines = [
+        rec(
+            "1",
+            "user",
+            "user",
+            json!([{"text": "qwen_zephyr_probe 설명해줘"}]),
+        ),
+        rec(
+            "2",
+            "assistant",
+            "model",
+            json!([{"text": "QWEN_E2E_THOUGHT_NEVER_INDEX", "thought": true}, {"text": "qwen_zephyr_probe는 검증용 용어입니다."}]),
+        ),
+        rec(
+            "3",
+            "assistant",
+            "model",
+            json!([{"functionCall": {"name": "shell", "args": {"command": "QWEN_E2E_TOOLCALL_NEVER_INDEX"}}}]),
+        ),
+        rec(
+            "4",
+            "system",
+            "user",
+            json!([{"text": "QWEN_E2E_SNAPSHOT_NEVER_INDEX"}]),
+        ),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(chats.join("qwen-e2e-1.jsonl"), body).unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("qwen={}", home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 1);
+    assert_eq!(sync["total_messages"], 2);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&["search", "keyword", q, "--agent", "qwen", "--json"]))
+            .unwrap()
+    };
+    let hits = search("qwen_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "qwen");
+    assert_eq!(hits[0]["session_id"], "qwen-e2e-1");
+    for noise in [
+        "QWEN_E2E_THOUGHT_NEVER_INDEX",
+        "QWEN_E2E_TOOLCALL_NEVER_INDEX",
+        "QWEN_E2E_SNAPSHOT_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value =
+        serde_json::from_slice(&run(&["trace", "qwen:qwen-e2e-1", "--turn", "2", "--json"]))
+            .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("QWEN_E2E_THOUGHT_NEVER_INDEX")
+    );
+}

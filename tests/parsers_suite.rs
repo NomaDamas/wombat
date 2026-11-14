@@ -1521,3 +1521,196 @@ fn kilo_roots_accept_data_dir_or_db_file_and_do_not_capture_opencode_dbs() {
     assert_eq!(cands[0].agent, AgentKind::OpenCode);
     assert!(cands[0].source_path.contains("opencode.db"));
 }
+
+fn qwen_home(dir: &Path) -> std::path::PathBuf {
+    let chats = dir.join("projects/-private-tmp-qa-proj/chats");
+    std::fs::create_dir_all(&chats).unwrap();
+    chats
+}
+
+#[test]
+fn qwen_real_recorded_session_keeps_only_real_user_and_assistant_text() {
+    // Records copied verbatim from a session the real Qwen Code 0.27.3 TUI wrote. The
+    // `memory_catalog_snapshot` record has message.role == "user" but type == "system".
+    let dir = TempDir::new().unwrap();
+    let chats = qwen_home(dir.path());
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen_real_session.jsonl"),
+        chats.join("dc7dbb31-24ca-4ab6-83eb-6b371570a240.jsonl"),
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        qwen: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture cwd is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected qwen session");
+    };
+    assert_eq!(s.agent, AgentKind::Qwen);
+    assert_eq!(s.session_id, "dc7dbb31-24ca-4ab6-83eb-6b371570a240");
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-qwen/proj"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0], (Role::User, "qa_qwen_alpha 라는 단어를 설명해줘"));
+    assert_eq!(got[1].0, Role::Assistant);
+    assert!(got[1].1.starts_with("MOCKREPLY 응답입니다:"));
+    let mirror = render_mirror(&s).content;
+    assert!(!mirror.contains("memory catalog"), "system snapshot leaked");
+}
+
+#[test]
+fn qwen_skips_thought_tool_and_system_records_and_ephemeral_cwd() {
+    let dir = TempDir::new().unwrap();
+    let chats = qwen_home(dir.path());
+    let rec = |uuid: &str,
+               typ: &str,
+               role: &str,
+               parts: serde_json::Value,
+               extra: serde_json::Value| {
+        let mut v = json!({"uuid": uuid, "sessionId": "qwen-s1", "timestamp": "2026-11-13T00:00:00.000Z",
+            "type": typ, "cwd": "/Users/a/proj", "version": "0.27.3",
+            "message": {"role": role, "parts": parts}});
+        if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+        }
+        v
+    };
+    write_jsonl_lines(
+        &chats.join("qwen-s1.jsonl"),
+        &[
+            rec(
+                "1",
+                "user",
+                "user",
+                json!([{"text": "첫 질문 qwen_q1"}]),
+                json!({"provenance": "real_user"}),
+            ),
+            rec(
+                "2",
+                "assistant",
+                "model",
+                json!([{"text": "QWEN_THOUGHT_NOISE", "thought": true}, {"text": "답변 qwen_a1"}]),
+                json!({}),
+            ),
+            rec(
+                "3",
+                "assistant",
+                "model",
+                json!([{"functionCall": {"name": "run_shell_command", "args": {"command": "QWEN_TOOLCALL_NOISE"}}}]),
+                json!({}),
+            ),
+            rec(
+                "4",
+                "tool_result",
+                "user",
+                json!([{"functionResponse": {"name": "run_shell_command", "response": {"output": "QWEN_TOOLRESULT_NOISE"}}}]),
+                json!({}),
+            ),
+            rec(
+                "5",
+                "system",
+                "user",
+                json!([{"text": "QWEN_SYSTEM_SNAPSHOT_NOISE"}]),
+                json!({"subtype": "memory_catalog_snapshot"}),
+            ),
+            rec(
+                "6",
+                "user",
+                "user",
+                json!([{"text": "/help"}]),
+                json!({"provenance": "real_user"}),
+            ),
+            rec(
+                "7",
+                "user",
+                "user",
+                json!([{"text": "두번째 질문 qwen_q2"}]),
+                json!({"provenance": "real_user"}),
+            ),
+        ],
+    );
+    write_jsonl_lines(
+        &chats.join("qwen-tmp.jsonl"),
+        &[
+            json!({"uuid": "1", "sessionId": "qwen-tmp", "timestamp": "2026-11-13T00:00:00.000Z", "type": "user", "cwd": "/tmp/scratch", "version": "0.27.3", "message": {"role": "user", "parts": [{"text": "tmp question"}]}, "provenance": "real_user"}),
+        ],
+    );
+    let roots = SourceRoots {
+        qwen: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1, "tmp-cwd session must be skipped");
+    let s = &sessions[0];
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "첫 질문 qwen_q1"),
+            (Role::Assistant, "답변 qwen_a1"),
+            (Role::User, "두번째 질문 qwen_q2"),
+        ]
+    );
+    let mirror = render_mirror(s).content;
+    for noise in [
+        "QWEN_THOUGHT_NOISE",
+        "QWEN_TOOLCALL_NOISE",
+        "QWEN_TOOLRESULT_NOISE",
+        "QWEN_SYSTEM_SNAPSHOT_NOISE",
+    ] {
+        assert!(!mirror.contains(noise), "{noise} leaked");
+    }
+    let raw = extract_raw_trace(
+        AgentKind::Qwen,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("QWEN_THOUGHT_NOISE"));
+}
+
+#[test]
+fn qwen_roots_resolve_from_home_projects_or_chats_dir() {
+    let dir = TempDir::new().unwrap();
+    let chats = qwen_home(dir.path());
+    write_jsonl_lines(
+        &chats.join("s.jsonl"),
+        &[
+            json!({"uuid": "1", "sessionId": "s", "timestamp": "2026-11-13T00:00:00.000Z", "type": "user", "cwd": "/Users/a/p", "message": {"role": "user", "parts": [{"text": "hi"}]}, "provenance": "real_user"}),
+        ],
+    );
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("projects"),
+        dir.path().join("projects/-private-tmp-qa-proj"),
+        chats.clone(),
+    ] {
+        let roots = SourceRoots {
+            qwen: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}
