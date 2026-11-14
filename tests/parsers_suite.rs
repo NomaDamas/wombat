@@ -2779,3 +2779,218 @@ fn aider_roots_accept_project_dir_or_history_file_or_parent_of_projects() {
         );
     }
 }
+
+fn vibe_store_with_history(
+    root: &Path,
+    sid: &str,
+    history: &[serde_json::Value],
+    cwd: &str,
+) -> std::path::PathBuf {
+    // Minimal store written like Vibe's `unified-session-store/v1`: CURRENT -> generation manifest
+    // -> checkpoint chunk(s) holding `history` entries `{message, source, turn_index}`.
+    let d = root.join("logs/session/unified").join(sid);
+    let generation = "0000000000000003";
+    std::fs::create_dir_all(d.join("chunks")).unwrap();
+    std::fs::create_dir_all(d.join("generations").join(generation)).unwrap();
+    let chunk = "a".repeat(64);
+    std::fs::write(
+        d.join("chunks").join(format!("{chunk}.json")),
+        serde_json::to_string(history).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("generations")
+            .join(generation)
+            .join("checkpoint.json"),
+        json!({"checkpoint_version": 1, "context": {"messages": "[]"}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("generations").join(generation).join("manifest.json"),
+        json!({"generation": generation, "session_id": sid, "checkpoint": {"path": "checkpoint.json", "chunks": [chunk]}, "projection_state": {"path": "projection-state.json", "chunks": []}}).to_string(),
+    ).unwrap();
+    std::fs::write(d.join("CURRENT"), json!({"generation": generation, "session_id": sid, "store_format": "mistral.vibe.unified-session-store/v1"}).to_string()).unwrap();
+    std::fs::write(
+        d.join("meta.json"),
+        json!({"session_id": sid, "parent_session_id": null, "start_time": "2026-11-13T14:15:51.772000+00:00", "end_time": "2026-11-13T14:15:52.120000+00:00", "environment": {"working_directory": cwd}, "title": null}).to_string(),
+    ).unwrap();
+    d
+}
+
+#[test]
+fn vibe_real_recorded_store_yields_user_and_assistant_text_only() {
+    // Store copied from a session the real Vibe 3.1.2 wrote, including a real tool turn
+    // (assistant `tool_call` -> `tool` result -> assistant text).
+    let dir = TempDir::new().unwrap();
+    let id = "93a2ecfb-7505-6879-fadb-ef33e77e3c22";
+    let dst = dir.path().join("logs/session/unified").join(id);
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/vibe_real")
+        .join(id);
+    for entry in walkdir::WalkDir::new(&src)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+    {
+        let rel = entry.path().strip_prefix(&src).unwrap();
+        std::fs::create_dir_all(dst.join(rel).parent().unwrap()).unwrap();
+        std::fs::copy(entry.path(), dst.join(rel)).unwrap();
+    }
+    let roots = SourceRoots {
+        vibe: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture cwd is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected vibe session");
+    };
+    assert_eq!(s.agent, AgentKind::Vibe);
+    assert_eq!(s.session_id, id);
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-vibe/proj"));
+    assert_eq!(s.started_at.as_deref(), Some("2026-11-13T14:17:22.777Z"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got.len(),
+        2,
+        "tool_call / tool entries must not become turns: {got:?}"
+    );
+    assert_eq!(
+        got[0],
+        (Role::User, "TOOLTEST qa_vibe_beta 셸로 echo 실행해줘")
+    );
+    assert!(got[1].1.starts_with("MOCKREPLY"));
+    assert!(!render_mirror(&s).content.contains("TOOLRESULT_MARKER"));
+    // The assistant turn's raw trace includes the tool call and its result from the checkpoint.
+    let raw = extract_raw_trace(
+        AgentKind::Vibe,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(
+        raw.contains("tool_call") && raw.contains("TOOLRESULT_MARKER"),
+        "{raw}"
+    );
+}
+
+#[test]
+fn vibe_skips_system_tool_entries_ephemeral_cwd_and_subsessions_by_default() {
+    let dir = TempDir::new().unwrap();
+    let h = |role: &str, content: serde_json::Value, extra: serde_json::Value| {
+        let mut m = json!({"role": role, "content": content});
+        if let (Some(o), Some(e)) = (m.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+        }
+        json!({"message": m, "source": "history", "turn_index": 0})
+    };
+    vibe_store_with_history(
+        dir.path(),
+        "vibe-s1",
+        &[
+            h(
+                "system",
+                json!([{"type": "text", "text": "VIBE_SYSTEM_NOISE"}]),
+                json!({}),
+            ),
+            h(
+                "user",
+                json!([{"type": "text", "text": "vibe_q1"}]),
+                json!({}),
+            ),
+            h(
+                "assistant",
+                json!([{"type": "reasoning", "text": "VIBE_REASONING_NOISE"}, {"type": "text", "text": "vibe_a1"}]),
+                json!({}),
+            ),
+            h(
+                "tool",
+                json!([{"type": "text", "text": "VIBE_TOOLRESULT_NOISE"}]),
+                json!({"tool_call_id": "t", "name": "bash"}),
+            ),
+            h(
+                "assistant",
+                json!([{"type": "tool_call", "id": "t", "name": "bash", "arguments": "VIBE_TOOLCALL_NOISE"}]),
+                json!({}),
+            ),
+        ],
+        "/Users/a/proj",
+    );
+    vibe_store_with_history(
+        dir.path(),
+        "vibe-tmp",
+        &[h(
+            "user",
+            json!([{"type": "text", "text": "tmp q"}]),
+            json!({}),
+        )],
+        "/tmp/scratch",
+    );
+    let roots = SourceRoots {
+        vibe: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1, "tmp-cwd session must be skipped");
+    let got: Vec<_> = sessions[0]
+        .turns
+        .iter()
+        .map(|t| (t.role, t.text.as_str()))
+        .collect();
+    assert_eq!(got, [(Role::User, "vibe_q1"), (Role::Assistant, "vibe_a1")]);
+    let mirror = render_mirror(&sessions[0]).content;
+    for n in [
+        "VIBE_SYSTEM_NOISE",
+        "VIBE_REASONING_NOISE",
+        "VIBE_TOOLRESULT_NOISE",
+        "VIBE_TOOLCALL_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+}
+
+#[test]
+fn vibe_roots_accept_vibe_home_session_dir_or_a_single_store() {
+    let dir = TempDir::new().unwrap();
+    let store = vibe_store_with_history(
+        dir.path(),
+        "vibe-root",
+        &[
+            json!({"message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}, "source": "history", "turn_index": 0}),
+        ],
+        "/Users/a/p",
+    );
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("logs"),
+        dir.path().join("logs/session"),
+        dir.path().join("logs/session/unified"),
+        store.clone(),
+    ] {
+        let roots = SourceRoots {
+            vibe: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}

@@ -1435,3 +1435,117 @@ fn cli_end_to_end_aider_source() {
         );
     }
 }
+
+/// Live pipeline for Mistral Vibe's unified session store through real minsync.
+#[test]
+fn cli_end_to_end_vibe_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let home = tmp.path().join("vibe");
+    let sid = "vibe-e2e-1";
+    let store = home.join("logs/session/unified").join(sid);
+    let generation = "0000000000000003";
+    std::fs::create_dir_all(store.join("chunks")).unwrap();
+    std::fs::create_dir_all(store.join("generations").join(generation)).unwrap();
+    let chunk = "b".repeat(64);
+    let h = |role: &str, content: Value| json!({"message": {"role": role, "content": content}, "source": "history", "turn_index": 0});
+    let history = [
+        h(
+            "user",
+            json!([{"type": "text", "text": "vibe_zephyr_probe 설명해줘"}]),
+        ),
+        h(
+            "assistant",
+            json!([{"type": "tool_call", "id": "t", "name": "bash", "arguments": "VIBE_E2E_TOOLCALL_NEVER_INDEX"}]),
+        ),
+        h(
+            "tool",
+            json!([{"type": "text", "text": "VIBE_E2E_TOOLRESULT_NEVER_INDEX"}]),
+        ),
+        h(
+            "assistant",
+            json!([{"type": "text", "text": "vibe_zephyr_probe는 검증용 용어입니다."}]),
+        ),
+    ];
+    std::fs::write(
+        store.join("chunks").join(format!("{chunk}.json")),
+        serde_json::to_string(&history).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        store
+            .join("generations")
+            .join(generation)
+            .join("checkpoint.json"),
+        "{}",
+    )
+    .unwrap();
+    std::fs::write(
+        store.join("generations").join(generation).join("manifest.json"),
+        json!({"generation": generation, "session_id": sid, "checkpoint": {"path": "checkpoint.json", "chunks": [chunk]}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        store.join("CURRENT"),
+        json!({"generation": generation, "snapshot_sequence": 3, "session_id": sid}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        store.join("meta.json"),
+        json!({"session_id": sid, "parent_session_id": null, "start_time": "2026-11-13T14:15:51.772000+00:00", "environment": {"working_directory": "/Users/a/proj"}, "title": "vibe chat"}).to_string(),
+    )
+    .unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("vibe={}", home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 1);
+    assert_eq!(sync["total_messages"], 2);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&["search", "keyword", q, "--agent", "vibe", "--json"]))
+            .unwrap()
+    };
+    let hits = search("vibe_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "vibe");
+    assert_eq!(hits[0]["session_id"], sid);
+    assert_eq!(hits[0]["title"], "vibe chat");
+    for noise in [
+        "VIBE_E2E_TOOLCALL_NEVER_INDEX",
+        "VIBE_E2E_TOOLRESULT_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value =
+        serde_json::from_slice(&run(&["trace", "vibe:vibe-e2e-1", "--turn", "2", "--json"]))
+            .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("VIBE_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}

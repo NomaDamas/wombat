@@ -40,6 +40,8 @@ pub struct SourcesConfig {
     #[serde(default)]
     pub aside: Option<Vec<PathBuf>>,
     #[serde(default)]
+    pub vibe: Option<Vec<PathBuf>>,
+    #[serde(default)]
     pub aider: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub codebuddy: Option<Vec<PathBuf>>,
@@ -146,6 +148,7 @@ impl RuntimeConfig {
                     Some(AgentKind::Omp) => explicit.omp.push(path),
                     Some(AgentKind::Hermes) => explicit.hermes.push(path),
                     Some(AgentKind::Aside) => explicit.aside.push(path),
+                    Some(AgentKind::Vibe) => explicit.vibe.push(path),
                     Some(AgentKind::Aider) => explicit.aider.push(path),
                     Some(AgentKind::Codebuddy) => explicit.codebuddy.push(path),
                     Some(AgentKind::Iflow) => explicit.iflow.push(path),
@@ -181,6 +184,9 @@ impl RuntimeConfig {
             }
             if let Some(v) = file_cfg.sources.aside {
                 base.aside = v;
+            }
+            if let Some(v) = file_cfg.sources.vibe {
+                base.vibe = v;
             }
             if let Some(v) = file_cfg.sources.aider {
                 base.aider = v;
@@ -220,6 +226,7 @@ impl RuntimeConfig {
         roots.omp.sort();
         roots.hermes.sort();
         roots.aside.sort();
+        roots.vibe.sort();
         roots.aider.sort();
         roots.codebuddy.sort();
         roots.iflow.sort();
@@ -285,6 +292,8 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.codebuddy.push(path.to_path_buf());
     } else if s.contains("aider") {
         roots.aider.push(path.to_path_buf());
+    } else if s.contains("vibe") {
+        roots.vibe.push(path.to_path_buf());
     } else if s.contains("aside") {
         roots.aside.push(path.to_path_buf());
     } else if s.contains("hermes") {
