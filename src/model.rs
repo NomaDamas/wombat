@@ -13,6 +13,7 @@ pub enum AgentKind {
     Omp,
     Hermes,
     Aside,
+    Goose,
     Vibe,
     Aider,
     Codebuddy,
@@ -26,7 +27,7 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 17] = [
+    pub const ALL: [AgentKind; 18] = [
         AgentKind::Codex,
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
@@ -34,6 +35,7 @@ impl AgentKind {
         AgentKind::Omp,
         AgentKind::Hermes,
         AgentKind::Aside,
+        AgentKind::Goose,
         AgentKind::Vibe,
         AgentKind::Aider,
         AgentKind::Codebuddy,
@@ -55,6 +57,7 @@ impl AgentKind {
             AgentKind::Omp => "omp",
             AgentKind::Hermes => "hermes",
             AgentKind::Aside => "aside",
+            AgentKind::Goose => "goose",
             AgentKind::Vibe => "vibe",
             AgentKind::Aider => "aider",
             AgentKind::Codebuddy => "codebuddy",
@@ -77,6 +80,7 @@ impl AgentKind {
             "omp" | "oh-my-pi" => Some(AgentKind::Omp),
             "hermes" | "hermes-agent" | "hermes_agent" => Some(AgentKind::Hermes),
             "aside" | "aside-browser" | "aside_browser" => Some(AgentKind::Aside),
+            "goose" | "block-goose" | "goose-cli" => Some(AgentKind::Goose),
             "vibe" | "mistral-vibe" | "mistral_vibe" => Some(AgentKind::Vibe),
             "aider" | "aider-chat" => Some(AgentKind::Aider),
             "codebuddy" | "codebuddy-code" | "code-buddy" => Some(AgentKind::Codebuddy),

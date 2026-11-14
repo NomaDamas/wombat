@@ -7,6 +7,7 @@ pub mod continue_cli;
 pub mod copilot;
 pub mod crush;
 pub mod gemini;
+pub mod goose;
 pub mod hermes;
 pub mod opencode;
 pub mod pi;
@@ -44,6 +45,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub goose: Vec<PathBuf>,
     pub vibe: Vec<PathBuf>,
     pub aider: Vec<PathBuf>,
     pub codebuddy: Vec<PathBuf>,
@@ -142,6 +144,15 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".vibe"));
             push_if_exists(&mut roots.vibe, vibe_home);
 
+            // Goose (sessions.db under the Goose data dir)
+            let goose_data = std::env::var_os("GOOSE_PATH_ROOT")
+                .map(|r| PathBuf::from(r).join("data"))
+                .or_else(|| {
+                    std::env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("goose"))
+                })
+                .unwrap_or_else(|| h.join(".local").join("share").join("goose"));
+            push_if_exists(&mut roots.goose, goose_data);
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -163,6 +174,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Goose => &self.goose,
             AgentKind::Vibe => &self.vibe,
             AgentKind::Aider => &self.aider,
             AgentKind::Codebuddy => &self.codebuddy,
@@ -210,6 +222,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Goose => goose::discover(root, opts)?,
                 AgentKind::Vibe => vibe::discover(root, opts)?,
                 AgentKind::Aider => aider::discover(root)?,
                 AgentKind::Codebuddy => codebuddy::discover(root)?,
@@ -240,6 +253,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Goose => goose::parse_candidate(candidate, opts),
         AgentKind::Vibe => vibe::parse_candidate(candidate, opts),
         AgentKind::Aider => aider::parse_candidate(candidate, opts),
         AgentKind::Codebuddy => codebuddy::parse_file(&candidate.fs_path, opts),
@@ -296,6 +310,7 @@ pub fn extract_raw_trace(
                 opencode::extract_raw_item(source_path, item_id)
             }
             AgentKind::Hermes => hermes::extract_raw_item(source_path, item_id),
+            AgentKind::Goose => goose::extract_raw_item(source_path, item_id),
             AgentKind::Vibe => vibe::extract_raw_item(source_path, item_id),
             AgentKind::Continue => continue_cli::extract_raw_item(source_path, item_id),
             AgentKind::Crush => crush::extract_raw_item(source_path, item_id),
