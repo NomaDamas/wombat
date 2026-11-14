@@ -1,6 +1,7 @@
 pub mod aside;
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
 pub mod crush;
 pub mod gemini;
 pub mod hermes;
@@ -39,6 +40,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub copilot: Vec<PathBuf>,
     pub crush: Vec<PathBuf>,
     pub qwen: Vec<PathBuf>,
     pub kilo: Vec<PathBuf>,
@@ -104,6 +106,12 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".local").join("share").join("crush"));
             push_if_exists(&mut roots.crush, crush_share);
 
+            // Copilot CLI
+            let copilot_home = std::env::var_os("COPILOT_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".copilot"));
+            push_if_exists(&mut roots.copilot, copilot_home);
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -125,6 +133,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Copilot => &self.copilot,
             AgentKind::Crush => &self.crush,
             AgentKind::Qwen => &self.qwen,
             AgentKind::Kilo => &self.kilo,
@@ -160,6 +169,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Copilot => copilot::discover(root)?,
                 AgentKind::Crush => crush::discover(root, opts)?,
                 AgentKind::Qwen => qwen::discover(root)?,
                 AgentKind::Kilo => opencode::discover_kilo(root, opts)?,
@@ -182,6 +192,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Copilot => copilot::parse_file(&candidate.fs_path, opts),
         AgentKind::Crush => crush::parse_candidate(candidate, opts),
         AgentKind::Qwen => qwen::parse_file(&candidate.fs_path, opts),
         AgentKind::Gemini => gemini::parse_file(&candidate.fs_path, opts),

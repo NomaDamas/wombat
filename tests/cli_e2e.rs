@@ -974,3 +974,111 @@ fn cli_end_to_end_crush_source() {
             .contains("CRUSH_E2E_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// Live pipeline for GitHub Copilot CLI sessions through real minsync.
+#[test]
+fn cli_end_to_end_copilot_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let home = tmp.path().join("copilot");
+    let sd = home.join("session-state/cop-e2e-1");
+    std::fs::create_dir_all(&sd).unwrap();
+    let ev = |ty: &str, data: Value| json!({"type": ty, "id": ty, "timestamp": "2026-11-13T00:00:00.000Z", "data": data});
+    let lines = [
+        ev(
+            "session.start",
+            json!({"sessionId": "cop-e2e-1", "copilotVersion": "1.0.110", "context": {"cwd": "/Users/a/proj"}}),
+        ),
+        ev(
+            "user.message",
+            json!({"content": "copilot_zephyr_probe 설명해줘", "transformedContent": "<current_datetime>x</current_datetime> copilot_zephyr_probe"}),
+        ),
+        ev(
+            "assistant.message",
+            json!({"content": "", "toolRequests": [{"toolCallId": "c1", "name": "bash", "arguments": {"command": "COPILOT_E2E_TOOLCALL_NEVER_INDEX"}}]}),
+        ),
+        ev(
+            "tool.execution_complete",
+            json!({"toolCallId": "c1", "success": true, "result": {"content": "COPILOT_E2E_TOOLRESULT_NEVER_INDEX"}}),
+        ),
+        ev(
+            "assistant.message",
+            json!({"content": "copilot_zephyr_probe는 검증용 용어입니다.", "reasoningText": "COPILOT_E2E_REASONING_NEVER_INDEX", "toolRequests": []}),
+        ),
+        ev(
+            "system.message",
+            json!({"content": "COPILOT_E2E_SYSTEM_NEVER_INDEX"}),
+        ),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(sd.join("events.jsonl"), body).unwrap();
+    std::fs::write(
+        sd.join("workspace.yaml"),
+        "id: cop-e2e-1\ncwd: /Users/a/proj\nname: copilot chat\n",
+    )
+    .unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("copilot={}", home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 1);
+    assert_eq!(sync["total_messages"], 2);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&[
+            "search", "keyword", q, "--agent", "copilot", "--json",
+        ]))
+        .unwrap()
+    };
+    let hits = search("copilot_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "copilot");
+    assert_eq!(hits[0]["session_id"], "cop-e2e-1");
+    assert_eq!(hits[0]["title"], "copilot chat");
+    for noise in [
+        "COPILOT_E2E_TOOLCALL_NEVER_INDEX",
+        "COPILOT_E2E_TOOLRESULT_NEVER_INDEX",
+        "COPILOT_E2E_REASONING_NEVER_INDEX",
+        "COPILOT_E2E_SYSTEM_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value = serde_json::from_slice(&run(&[
+        "trace",
+        "copilot:cop-e2e-1",
+        "--turn",
+        "2",
+        "--context",
+        "3",
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("COPILOT_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}

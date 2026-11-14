@@ -13,6 +13,7 @@ pub enum AgentKind {
     Omp,
     Hermes,
     Aside,
+    Copilot,
     Crush,
     Qwen,
     Kilo,
@@ -20,7 +21,7 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 11] = [
+    pub const ALL: [AgentKind; 12] = [
         AgentKind::Codex,
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
@@ -28,6 +29,7 @@ impl AgentKind {
         AgentKind::Omp,
         AgentKind::Hermes,
         AgentKind::Aside,
+        AgentKind::Copilot,
         AgentKind::Crush,
         AgentKind::Qwen,
         AgentKind::Kilo,
@@ -43,6 +45,7 @@ impl AgentKind {
             AgentKind::Omp => "omp",
             AgentKind::Hermes => "hermes",
             AgentKind::Aside => "aside",
+            AgentKind::Copilot => "copilot",
             AgentKind::Crush => "crush",
             AgentKind::Qwen => "qwen",
             AgentKind::Kilo => "kilo",
@@ -59,6 +62,7 @@ impl AgentKind {
             "omp" | "oh-my-pi" => Some(AgentKind::Omp),
             "hermes" | "hermes-agent" | "hermes_agent" => Some(AgentKind::Hermes),
             "aside" | "aside-browser" | "aside_browser" => Some(AgentKind::Aside),
+            "copilot" | "copilot-cli" | "github-copilot" => Some(AgentKind::Copilot),
             "crush" | "charm-crush" => Some(AgentKind::Crush),
             "qwen" | "qwen-code" | "qwen_code" => Some(AgentKind::Qwen),
             "kilo" | "kilocode" => Some(AgentKind::Kilo),

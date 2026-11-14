@@ -40,6 +40,8 @@ pub struct SourcesConfig {
     #[serde(default)]
     pub aside: Option<Vec<PathBuf>>,
     #[serde(default)]
+    pub copilot: Option<Vec<PathBuf>>,
+    #[serde(default)]
     pub crush: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub qwen: Option<Vec<PathBuf>>,
@@ -136,6 +138,7 @@ impl RuntimeConfig {
                     Some(AgentKind::Omp) => explicit.omp.push(path),
                     Some(AgentKind::Hermes) => explicit.hermes.push(path),
                     Some(AgentKind::Aside) => explicit.aside.push(path),
+                    Some(AgentKind::Copilot) => explicit.copilot.push(path),
                     Some(AgentKind::Crush) => explicit.crush.push(path),
                     Some(AgentKind::Qwen) => explicit.qwen.push(path),
                     Some(AgentKind::Kilo) => explicit.kilo.push(path),
@@ -167,6 +170,9 @@ impl RuntimeConfig {
             if let Some(v) = file_cfg.sources.aside {
                 base.aside = v;
             }
+            if let Some(v) = file_cfg.sources.copilot {
+                base.copilot = v;
+            }
             if let Some(v) = file_cfg.sources.crush {
                 base.crush = v;
             }
@@ -190,6 +196,7 @@ impl RuntimeConfig {
         roots.omp.sort();
         roots.hermes.sort();
         roots.aside.sort();
+        roots.copilot.sort();
         roots.crush.sort();
         roots.qwen.sort();
         roots.kilo.sort();
@@ -240,6 +247,8 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.qwen.push(path.to_path_buf());
     } else if s.contains("crush") {
         roots.crush.push(path.to_path_buf());
+    } else if s.contains("copilot") {
+        roots.copilot.push(path.to_path_buf());
     } else if s.contains("aside") {
         roots.aside.push(path.to_path_buf());
     } else if s.contains("hermes") {

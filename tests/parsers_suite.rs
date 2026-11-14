@@ -1999,3 +1999,191 @@ fn crush_trace_uses_row_order_when_turns_share_a_second() {
     );
     assert!(!raw.contains("SECOND_Q") || raw.contains("second answer"));
 }
+
+fn copilot_session_dir(home: &Path, id: &str) -> std::path::PathBuf {
+    let d = home.join("session-state").join(id);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn copilot_real_recorded_session_keeps_user_and_assistant_text_only() {
+    // Records copied verbatim from a session the real Copilot CLI 1.0.110 wrote (BYOK, offline).
+    let dir = TempDir::new().unwrap();
+    let id = "e9fd5251-fe21-4bd6-8647-9df3f3110136";
+    let sd = copilot_session_dir(dir.path(), id);
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    std::fs::copy(
+        fx.join("copilot_real_events.jsonl"),
+        sd.join("events.jsonl"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fx.join("copilot_real_workspace.yaml"),
+        sd.join("workspace.yaml"),
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        copilot: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture cwd is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected copilot session");
+    };
+    assert_eq!(s.agent, AgentKind::Copilot);
+    assert_eq!(s.session_id, id);
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-copilot/proj"));
+    assert_eq!(
+        s.title.as_deref(),
+        Some("qa_copilot_alpha 라는 단어를 설명해줘")
+    );
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    // user, assistant(text), user, [assistant with only tool requests => dropped], assistant(text)
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert_eq!(
+        got[0],
+        (Role::User, "qa_copilot_alpha 라는 단어를 설명해줘")
+    );
+    assert_eq!(
+        got[2],
+        (Role::User, "TOOLTEST qa_copilot_delta 셸로 echo 실행해줘")
+    );
+    assert!(got[1].1.starts_with("MOCKREPLY") && got[3].1.starts_with("MOCKREPLY"));
+    // `content` is what the user typed; `transformedContent` carries the injected datetime block.
+    assert!(!s.turns[0].text.contains("<current_datetime>"));
+    let mirror = render_mirror(&s).content;
+    assert!(
+        !mirror.contains("You are the GitHub Copilot CLI"),
+        "system prompt leaked"
+    );
+    assert!(
+        !mirror.contains("environment_limitations"),
+        "instruction.update leaked"
+    );
+    // Line-based traces return the turn's own record plus `--context` lines; the tool events
+    // of this turn sit on the 5 lines before the final assistant message.
+    let raw = extract_raw_trace(
+        AgentKind::Copilot,
+        &s.source_path,
+        &s.turns[3].source_offset,
+        5,
+    )
+    .unwrap();
+    assert!(
+        raw.contains("tool.execution_start") && raw.contains("TOOLRESULT_MARKER"),
+        "{raw}"
+    );
+}
+
+#[test]
+fn copilot_skips_empty_assistant_ephemeral_cwd_and_reads_events_without_workspace() {
+    let dir = TempDir::new().unwrap();
+    let ev = |ty: &str, data: serde_json::Value| json!({"type": ty, "id": ty, "timestamp": "2026-11-13T00:00:00.000Z", "data": data});
+    let sd = copilot_session_dir(dir.path(), "cp-1");
+    write_jsonl_lines(
+        &sd.join("events.jsonl"),
+        &[
+            ev(
+                "session.start",
+                json!({"sessionId": "cp-1", "copilotVersion": "1.0.110", "context": {"cwd": "/Users/a/proj"}}),
+            ),
+            ev(
+                "user.message",
+                json!({"content": "copilot_q1", "transformedContent": "<current_datetime>x</current_datetime> copilot_q1"}),
+            ),
+            ev(
+                "assistant.message",
+                json!({"content": "", "toolRequests": [{"toolCallId": "c", "name": "bash", "arguments": {"command": "COPILOT_TOOLCALL_NOISE"}}]}),
+            ),
+            ev(
+                "tool.execution_complete",
+                json!({"toolCallId": "c", "success": true, "result": {"content": "COPILOT_TOOLRESULT_NOISE"}}),
+            ),
+            ev(
+                "assistant.message",
+                json!({"content": "copilot_a1", "reasoningText": "COPILOT_REASONING_NOISE", "toolRequests": []}),
+            ),
+            ev("system.message", json!({"content": "COPILOT_SYSTEM_NOISE"})),
+        ],
+    );
+    let sd2 = copilot_session_dir(dir.path(), "cp-tmp");
+    write_jsonl_lines(
+        &sd2.join("events.jsonl"),
+        &[
+            ev(
+                "session.start",
+                json!({"sessionId": "cp-tmp", "context": {"cwd": "/tmp/scratch"}}),
+            ),
+            ev("user.message", json!({"content": "tmp question"})),
+            ev("assistant.message", json!({"content": "tmp answer"})),
+        ],
+    );
+    let roots = SourceRoots {
+        copilot: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1, "tmp-cwd session must be skipped");
+    let s = &sessions[0];
+    assert_eq!(s.session_id, "cp-1");
+    assert_eq!(s.cwd.as_deref(), Some("/Users/a/proj"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [(Role::User, "copilot_q1"), (Role::Assistant, "copilot_a1")]
+    );
+    let mirror = render_mirror(s).content;
+    for n in [
+        "COPILOT_TOOLCALL_NOISE",
+        "COPILOT_TOOLRESULT_NOISE",
+        "COPILOT_REASONING_NOISE",
+        "COPILOT_SYSTEM_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+}
+
+#[test]
+fn copilot_roots_resolve_from_home_session_state_or_session_dir() {
+    let dir = TempDir::new().unwrap();
+    let sd = copilot_session_dir(dir.path(), "cp-root");
+    write_jsonl_lines(
+        &sd.join("events.jsonl"),
+        &[
+            json!({"type": "session.start", "id": "1", "timestamp": "2026-11-13T00:00:00Z", "data": {"sessionId": "cp-root", "context": {"cwd": "/Users/a/p"}}}),
+            json!({"type": "user.message", "id": "2", "timestamp": "2026-11-13T00:00:01Z", "data": {"content": "hi"}}),
+        ],
+    );
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("session-state"),
+        sd.clone(),
+    ] {
+        let roots = SourceRoots {
+            copilot: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}
