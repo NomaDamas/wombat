@@ -1362,3 +1362,76 @@ fn cli_end_to_end_codebuddy_source() {
             .contains("CODEBUDDY_E2E_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// Live pipeline for Aider chat history (markdown, many sessions per file) through real minsync.
+#[test]
+fn cli_end_to_end_aider_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let proj = tmp.path().join("work/proj");
+    std::fs::create_dir_all(proj.join(".git")).unwrap();
+    std::fs::write(
+        proj.join(".aider.chat.history.md"),
+        "\n# aider chat started at 2026-11-01 10:00:00\n\n> Aider v0.86.2  \n> Repo-map: AIDER_E2E_BANNER_NEVER_INDEX  \n\n#### aider_zephyr_probe 설명해줘  \n\naider_zephyr_probe는 검증용 용어입니다.\n\n> Tokens: AIDER_E2E_TOKENS_NEVER_INDEX  \n\n#### /run echo hi  \n> Add command output to the chat? (Y)es/(N)o [Yes]: n  \n\n# aider chat started at 2026-11-02 11:00:00\n\n#### aider_second_session_probe  \n\nsecond answer text\n",
+    )
+    .unwrap();
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("aider={}", tmp.path().join("work").display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .arg("--include-ephemeral")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let plain = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    // temp dirs are "ephemeral" projects, so sync must opt in.
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(
+        sync["total_sessions"], 2,
+        "one session per '# aider chat started at' header"
+    );
+    assert_eq!(sync["total_messages"], 4);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&plain(&[
+            "search", "keyword", q, "--agent", "aider", "--json",
+        ]))
+        .unwrap()
+    };
+    let hits = search("aider_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "aider");
+    assert!(!search("aider_second_session_probe").is_empty());
+    for noise in [
+        "AIDER_E2E_BANNER_NEVER_INDEX",
+        "AIDER_E2E_TOKENS_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+}

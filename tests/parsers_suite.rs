@@ -2624,3 +2624,158 @@ fn codebuddy_roots_accept_config_dir_or_projects_dir() {
         );
     }
 }
+
+fn aider_project(dir: &Path, name: &str) -> std::path::PathBuf {
+    let p = dir.join(name);
+    std::fs::create_dir_all(p.join(".git")).unwrap();
+    p
+}
+
+#[test]
+fn aider_real_recorded_history_yields_user_and_assistant_turns() {
+    // File copied verbatim from a real aider 0.86.2 session (stub endpoint): `#### ` user lines,
+    // `> ` tool/notice lines, plain blocks = assistant. Includes /help, /run and a multi-line prompt.
+    let dir = TempDir::new().unwrap();
+    let proj = aider_project(dir.path(), "myproj");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/aider_real_chat_history.md"),
+        proj.join(".aider.chat.history.md"),
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        aider: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // OS temp dir
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected aider session");
+    };
+    assert_eq!(s.agent, AgentKind::Aider);
+    assert!(s.cwd.as_deref().unwrap().ends_with("myproj"));
+    assert_eq!(s.started_at.as_deref(), Some("2026-11-13T23:08:46"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    // alpha, reply, beta, reply, multi-line prompt, reply. /help and /run are commands, not dialogue.
+    assert_eq!(got.len(), 6, "{got:?}");
+    assert_eq!(got[0], (Role::User, "qa_aider_alpha 라는 단어를 설명해줘"));
+    assert!(got[1].1.starts_with("MOCKREPLY 응답입니다: qa_aider_alpha"));
+    assert_eq!(
+        got[4],
+        (Role::User, "qa_aider_multi 줄1\nqa_aider_multi 줄2")
+    );
+    assert_eq!(got[5].0, Role::Assistant);
+    assert!(
+        got[5]
+            .1
+            .starts_with("MOCKREPLY 응답입니다: qa_aider_multi 줄1 qa_aider_multi 줄2"),
+        "reply after a multi-line prompt must not be empty: {:?}",
+        got[5].1
+    );
+    let mirror = render_mirror(&s).content;
+    assert!(!mirror.contains("Tokens:"), "token accounting leaked");
+    assert!(!mirror.contains("Repo-map"), "banner leaked");
+    assert!(
+        !mirror.contains("/add              Add files"),
+        "/help output leaked"
+    );
+    // Offsets are line ranges of the history file, so trace can show the raw block.
+    let raw = extract_raw_trace(
+        AgentKind::Aider,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("MOCKREPLY"), "{raw}");
+}
+
+#[test]
+fn aider_splits_multiple_sessions_in_one_file_and_skips_commands_and_ephemeral() {
+    let dir = TempDir::new().unwrap();
+    let proj = aider_project(dir.path(), "p2");
+    std::fs::write(
+        proj.join(".aider.chat.history.md"),
+        "\n# aider chat started at 2026-11-01 10:00:00\n\n> Aider v0.86.2  \n\n#### first_q aider_s1  \n\nfirst_a aider_s1\n\n> Tokens: 1 sent, 1 received.  \n\n#### /clear  \n\n#### /tokens  \n> some table  \n\n# aider chat started at 2026-11-02 11:00:00\n\n#### second_q aider_s2  \n\nsecond_a aider_s2\n\n> Tokens: 1 sent, 1 received.  \n",
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        aider: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    let mut sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    sessions.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    assert_eq!(
+        sessions.len(),
+        2,
+        "one session per '# aider chat started at' header"
+    );
+    let texts = |s: &wombat::model::ParsedSession| {
+        s.turns.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        texts(&sessions[0]),
+        ["first_q aider_s1", "first_a aider_s1"]
+    );
+    assert_eq!(
+        texts(&sessions[1]),
+        ["second_q aider_s2", "second_a aider_s2"]
+    );
+    assert_ne!(sessions[0].session_id, sessions[1].session_id);
+    // Default options skip the temp-dir project entirely.
+    let d = ParseOptions::default();
+    assert!(
+        discover_all(&roots, None, &d)
+            .unwrap()
+            .iter()
+            .all(|c| matches!(
+                parse_candidate(c, &d).unwrap(),
+                ParseOutcome::Skipped { .. }
+            ))
+    );
+}
+
+#[test]
+fn aider_roots_accept_project_dir_or_history_file_or_parent_of_projects() {
+    let dir = TempDir::new().unwrap();
+    let proj = aider_project(dir.path(), "p3");
+    std::fs::write(
+        proj.join(".aider.chat.history.md"),
+        "\n# aider chat started at 2026-11-01 10:00:00\n\n#### q\n\na\n",
+    )
+    .unwrap();
+    let opts = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    for root in [
+        dir.path().to_path_buf(),
+        proj.clone(),
+        proj.join(".aider.chat.history.md"),
+    ] {
+        let roots = SourceRoots {
+            aider: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &opts).unwrap().len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}
