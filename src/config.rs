@@ -39,6 +39,8 @@ pub struct SourcesConfig {
     pub hermes: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub aside: Option<Vec<PathBuf>>,
+    #[serde(default, rename = "continue")]
+    pub continue_cli: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub copilot: Option<Vec<PathBuf>>,
     #[serde(default)]
@@ -138,6 +140,7 @@ impl RuntimeConfig {
                     Some(AgentKind::Omp) => explicit.omp.push(path),
                     Some(AgentKind::Hermes) => explicit.hermes.push(path),
                     Some(AgentKind::Aside) => explicit.aside.push(path),
+                    Some(AgentKind::Continue) => explicit.continue_cli.push(path),
                     Some(AgentKind::Copilot) => explicit.copilot.push(path),
                     Some(AgentKind::Crush) => explicit.crush.push(path),
                     Some(AgentKind::Qwen) => explicit.qwen.push(path),
@@ -170,6 +173,9 @@ impl RuntimeConfig {
             if let Some(v) = file_cfg.sources.aside {
                 base.aside = v;
             }
+            if let Some(v) = file_cfg.sources.continue_cli {
+                base.continue_cli = v;
+            }
             if let Some(v) = file_cfg.sources.copilot {
                 base.copilot = v;
             }
@@ -196,6 +202,7 @@ impl RuntimeConfig {
         roots.omp.sort();
         roots.hermes.sort();
         roots.aside.sort();
+        roots.continue_cli.sort();
         roots.copilot.sort();
         roots.crush.sort();
         roots.qwen.sort();
@@ -249,6 +256,8 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.crush.push(path.to_path_buf());
     } else if s.contains("copilot") {
         roots.copilot.push(path.to_path_buf());
+    } else if s.contains(".continue") {
+        roots.continue_cli.push(path.to_path_buf());
     } else if s.contains("aside") {
         roots.aside.push(path.to_path_buf());
     } else if s.contains("hermes") {

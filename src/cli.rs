@@ -89,7 +89,7 @@ pub enum Commands {
 
 #[derive(Debug, Args)]
 pub struct SyncArgs {
-    /// Restrict discovery to specific agent(s): codex, claude-code, opencode, pi, omp, hermes, aside, kilo, gemini, qwen, crush, copilot
+    /// Restrict discovery to specific agent(s): codex, claude-code, opencode, pi, omp, hermes, aside, kilo, gemini, qwen, crush, copilot, continue
     #[arg(long = "agent")]
     pub agents: Vec<String>,
 
@@ -131,7 +131,7 @@ pub struct SearchArgs {
     #[arg(long, short = 'k', visible_alias = "top-k", default_value_t = 10)]
     pub limit: usize,
 
-    /// Filter hits to one coding agent (`codex`, `claude-code`, `opencode`, `pi`, `omp`, `hermes`, `aside`, `gemini`, `qwen`, `crush`, `copilot`)
+    /// Filter hits to one coding agent (`codex`, `claude-code`, `opencode`, `pi`, `omp`, `hermes`, `aside`, `gemini`, `qwen`, `crush`, `copilot`, `continue`)
     #[arg(long)]
     pub agent: Option<String>,
 
