@@ -1,6 +1,7 @@
 pub mod aside;
 pub mod claude_code;
 pub mod codex;
+pub mod gemini;
 pub mod hermes;
 pub mod opencode;
 pub mod pi;
@@ -13,7 +14,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v8";
+pub const PARSER_FINGERPRINT: &str = "wombat-parsers-v9";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParseOptions {
@@ -36,6 +37,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub gemini: Vec<PathBuf>,
 }
 
 impl SourceRoots {
@@ -73,6 +75,12 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".hermes"));
             push_if_exists(&mut roots.hermes, hermes_home);
 
+            // Gemini CLI
+            let gemini_home = std::env::var_os("GEMINI_CLI_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.clone());
+            push_if_exists(&mut roots.gemini, gemini_home.join(".gemini"));
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -94,6 +102,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Gemini => &self.gemini,
         }
     }
 }
@@ -125,6 +134,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Gemini => gemini::discover(root, opts)?,
             };
             out.extend(discovered);
         }
@@ -143,6 +153,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Gemini => gemini::parse_file(&candidate.fs_path, opts),
     }
 }
 
