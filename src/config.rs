@@ -40,6 +40,8 @@ pub struct SourcesConfig {
     #[serde(default)]
     pub aside: Option<Vec<PathBuf>>,
     #[serde(default)]
+    pub kilo: Option<Vec<PathBuf>>,
+    #[serde(default)]
     pub gemini: Option<Vec<PathBuf>>,
 }
 
@@ -130,6 +132,7 @@ impl RuntimeConfig {
                     Some(AgentKind::Omp) => explicit.omp.push(path),
                     Some(AgentKind::Hermes) => explicit.hermes.push(path),
                     Some(AgentKind::Aside) => explicit.aside.push(path),
+                    Some(AgentKind::Kilo) => explicit.kilo.push(path),
                     Some(AgentKind::Gemini) => explicit.gemini.push(path),
                     None => attach_auto_detected_source(&mut explicit, &path),
                 }
@@ -158,6 +161,9 @@ impl RuntimeConfig {
             if let Some(v) = file_cfg.sources.aside {
                 base.aside = v;
             }
+            if let Some(v) = file_cfg.sources.kilo {
+                base.kilo = v;
+            }
             if let Some(v) = file_cfg.sources.gemini {
                 base.gemini = v;
             }
@@ -172,6 +178,7 @@ impl RuntimeConfig {
         roots.omp.sort();
         roots.hermes.sort();
         roots.aside.sort();
+        roots.kilo.sort();
         roots.gemini.sort();
 
         Ok(Self {
@@ -213,6 +220,8 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.opencode.push(path.to_path_buf());
     } else if s.contains("gemini") {
         roots.gemini.push(path.to_path_buf());
+    } else if s.contains("kilo") {
+        roots.kilo.push(path.to_path_buf());
     } else if s.contains("aside") {
         roots.aside.push(path.to_path_buf());
     } else if s.contains("hermes") {
