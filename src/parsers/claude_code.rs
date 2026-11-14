@@ -12,6 +12,16 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 pub fn discover(root: &Path, opts: &ParseOptions) -> Result<Vec<SourceCandidate>> {
+    discover_as(AgentKind::ClaudeCode, root, opts)
+}
+
+/// iFlow CLI writes Claude-Code-shaped session logs (`projects/<cwd>/session-<id>.jsonl`); it is
+/// indexed as its own agent so `claude-code` searches never include it.
+pub fn discover_as(
+    agent: AgentKind,
+    root: &Path,
+    opts: &ParseOptions,
+) -> Result<Vec<SourceCandidate>> {
     if !root.exists() {
         return Ok(Vec::new());
     }
@@ -31,8 +41,8 @@ pub fn discover(root: &Path, opts: &ParseOptions) -> Result<Vec<SourceCandidate>
             continue;
         };
         out.push(SourceCandidate {
-            agent: AgentKind::ClaudeCode,
-            item_key: build_file_item_key(AgentKind::ClaudeCode, path),
+            agent,
+            item_key: build_file_item_key(agent, path),
             version,
             source_path: path.to_string_lossy().into_owned(),
             fs_path: path.to_path_buf(),
@@ -43,6 +53,10 @@ pub fn discover(root: &Path, opts: &ParseOptions) -> Result<Vec<SourceCandidate>
 }
 
 pub fn parse_file(path: &Path, opts: &ParseOptions) -> Result<ParseOutcome> {
+    parse_file_as(AgentKind::ClaudeCode, path, opts)
+}
+
+pub fn parse_file_as(agent: AgentKind, path: &Path, opts: &ParseOptions) -> Result<ParseOutcome> {
     if !opts.include_subagents && path.components().any(|c| c.as_os_str() == "subagents") {
         return Ok(ParseOutcome::Skipped { reason: "subagent" });
     }
@@ -179,7 +193,7 @@ pub fn parse_file(path: &Path, opts: &ParseOptions) -> Result<ParseOutcome> {
     });
 
     Ok(ParseOutcome::Session(ParsedSession {
-        agent: AgentKind::ClaudeCode,
+        agent,
         session_id: resolved_id,
         source_path: path.to_string_lossy().into_owned(),
         cwd,
