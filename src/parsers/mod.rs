@@ -1,3 +1,4 @@
+pub mod aider;
 pub mod aside;
 pub mod claude_code;
 pub mod codebuddy;
@@ -42,6 +43,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub aider: Vec<PathBuf>,
     pub codebuddy: Vec<PathBuf>,
     pub iflow: Vec<PathBuf>,
     pub continue_cli: Vec<PathBuf>,
@@ -153,6 +155,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Aider => &self.aider,
             AgentKind::Codebuddy => &self.codebuddy,
             AgentKind::Iflow => &self.iflow,
             AgentKind::Continue => &self.continue_cli,
@@ -198,6 +201,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Aider => aider::discover(root)?,
                 AgentKind::Codebuddy => codebuddy::discover(root)?,
                 AgentKind::Iflow => {
                     claude_code::discover_as(AgentKind::Iflow, &iflow_projects(root), opts)?
@@ -226,6 +230,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Aider => aider::parse_candidate(candidate, opts),
         AgentKind::Codebuddy => codebuddy::parse_file(&candidate.fs_path, opts),
         AgentKind::Iflow => claude_code::parse_file_as(AgentKind::Iflow, &candidate.fs_path, opts),
         AgentKind::Continue => continue_cli::parse_file(&candidate.fs_path, opts),
