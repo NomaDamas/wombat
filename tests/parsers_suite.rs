@@ -1714,3 +1714,288 @@ fn qwen_roots_resolve_from_home_projects_or_chats_dir() {
         );
     }
 }
+
+/// Builds a Crush data dir like the real one: `<root>/projects.json` index and a per-project
+/// `.crush/crush.db`. Schema and part JSON match what Crush 0.101 wrote in a live TUI run.
+fn crush_fixture(root: &Path, project: &str) -> std::path::PathBuf {
+    let data_dir = root.join(project).join(".crush");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let conn = Connection::open(data_dir.join("crush.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT, title TEXT NOT NULL, message_count INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0.0, updated_at INTEGER NOT NULL, created_at INTEGER NOT NULL, summary_message_id TEXT, todos TEXT, channel TEXT);
+         CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, parts TEXT NOT NULL default '[]', model TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER, provider TEXT, is_summary_message INTEGER DEFAULT 0 NOT NULL);",
+    )
+    .unwrap();
+    conn.execute("INSERT INTO sessions (id, parent_session_id, title, updated_at, created_at) VALUES ('cs1', NULL, 'Crush chat', 1794576811, 1794576798)", []).unwrap();
+    conn.execute("INSERT INTO sessions (id, parent_session_id, title, updated_at, created_at) VALUES ('cs-agent', 'cs1', 'Sub task', 1794576812, 1794576800)", []).unwrap();
+    let msg = |id: &str, sid: &str, role: &str, parts: serde_json::Value, ts: i64, summary: i64| {
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, parts, created_at, updated_at, is_summary_message) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)",
+            params![id, sid, role, parts.to_string(), ts, summary],
+        )
+        .unwrap();
+    };
+    msg(
+        "m1",
+        "cs1",
+        "user",
+        json!([{"type": "text", "data": {"text": "crush_alpha 가 뭐야?"}}, {"type": "finish", "data": {"reason": "stop", "time": 0}}]),
+        1794576798,
+        0,
+    );
+    msg(
+        "m2",
+        "cs1",
+        "assistant",
+        json!([{"type": "reasoning", "data": {"thinking": "CRUSH_THINKING_NOISE"}}, {"type": "tool_call", "data": {"id": "t1", "name": "bash", "input": "CRUSH_TOOLCALL_NOISE", "finished": true}}, {"type": "finish", "data": {"reason": "tool_use", "time": 1794576799}}]),
+        1794576799,
+        0,
+    );
+    msg(
+        "m3",
+        "cs1",
+        "tool",
+        json!([{"type": "tool_result", "data": {"tool_call_id": "t1", "name": "bash", "content": "CRUSH_TOOLRESULT_NOISE"}}]),
+        1794576800,
+        0,
+    );
+    msg(
+        "m4",
+        "cs1",
+        "assistant",
+        json!([{"type": "text", "data": {"text": "crush_alpha는 테스트 용어입니다."}}, {"type": "finish", "data": {"reason": "end_turn", "time": 1794576801}}]),
+        1794576801,
+        0,
+    );
+    msg(
+        "m5",
+        "cs1",
+        "assistant",
+        json!([{"type": "text", "data": {"text": "CRUSH_SUMMARY_NOISE"}}]),
+        1794576802,
+        1,
+    );
+    msg(
+        "m6",
+        "cs1",
+        "user",
+        json!([{"type": "text", "data": {"text": "crush_beta 두번째"}}]),
+        1794576803,
+        0,
+    );
+    msg(
+        "m7",
+        "cs-agent",
+        "user",
+        json!([{"type": "text", "data": {"text": "subtask prompt"}}]),
+        1794576800,
+        0,
+    );
+    msg(
+        "m8",
+        "cs-agent",
+        "assistant",
+        json!([{"type": "text", "data": {"text": "subtask answer"}}]),
+        1794576801,
+        0,
+    );
+    let share = root.join("share");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::write(
+        share.join("projects.json"),
+        json!({"projects": [{"path": root.join(project), "data_dir": data_dir, "last_accessed": "2026-11-13T13:33:04Z"}]}).to_string(),
+    )
+    .unwrap();
+    share
+}
+
+#[test]
+fn crush_reads_text_parts_and_skips_reasoning_tools_summary_and_child_sessions() {
+    let dir = TempDir::new().unwrap();
+    let share = crush_fixture(dir.path(), "myproj");
+    let roots = SourceRoots {
+        crush: vec![share.clone()],
+        ..Default::default()
+    };
+    // The fixture lives under the OS temp dir, which wombat treats as an ephemeral project.
+    let default_ids = SourceRoots {
+        crush: vec![share.clone()],
+        ..Default::default()
+    };
+    assert!(
+        discover_all(&default_ids, None, &ParseOptions::default())
+            .unwrap()
+            .iter()
+            .all(|c| matches!(
+                parse_candidate(c, &ParseOptions::default()).unwrap(),
+                ParseOutcome::Skipped {
+                    reason: "ephemeral_cwd"
+                }
+            )),
+        "temp-dir project must be skipped by default"
+    );
+    let opts = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    let sessions: Vec<_> = cands
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1, "child (agent) session must be skipped");
+    let s = &sessions[0];
+    assert_eq!(s.agent, AgentKind::Crush);
+    assert_eq!(s.session_id, "cs1");
+    assert_eq!(s.title.as_deref(), Some("Crush chat"));
+    assert!(s.cwd.as_deref().unwrap().ends_with("myproj"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "crush_alpha 가 뭐야?"),
+            (Role::Assistant, "crush_alpha는 테스트 용어입니다."),
+            (Role::User, "crush_beta 두번째"),
+        ]
+    );
+    let mirror = render_mirror(s).content;
+    for noise in [
+        "CRUSH_THINKING_NOISE",
+        "CRUSH_TOOLCALL_NOISE",
+        "CRUSH_TOOLRESULT_NOISE",
+        "CRUSH_SUMMARY_NOISE",
+    ] {
+        assert!(!mirror.contains(noise), "{noise} leaked");
+    }
+    // Trace of an assistant turn reaches back over the tool messages of that turn.
+    let raw = extract_raw_trace(
+        AgentKind::Crush,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("CRUSH_TOOLCALL_NOISE") && raw.contains("crush_alpha는"));
+}
+
+#[test]
+fn crush_include_subagents_returns_child_sessions_and_roots_accept_project_dirs() {
+    let dir = TempDir::new().unwrap();
+    let share = crush_fixture(dir.path(), "myproj");
+    let subs = ParseOptions {
+        include_subagents: true,
+        include_ephemeral: true,
+    };
+    let roots = SourceRoots {
+        crush: vec![share.clone()],
+        ..Default::default()
+    };
+    let ids = |opts: &ParseOptions, roots: &SourceRoots| {
+        let mut v: Vec<String> = discover_all(roots, None, opts)
+            .unwrap()
+            .iter()
+            .filter_map(|c| match parse_candidate(c, opts).unwrap() {
+                ParseOutcome::Session(s) => Some(s.session_id),
+                ParseOutcome::Skipped { .. } => None,
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ids(&subs, &roots), ["cs-agent", "cs1"]);
+    // A project dir, its .crush dir, or the db file itself also work as a root.
+    for root in [
+        dir.path().join("myproj"),
+        dir.path().join("myproj/.crush"),
+        dir.path().join("myproj/.crush/crush.db"),
+    ] {
+        let r = SourceRoots {
+            crush: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            ids(
+                &ParseOptions {
+                    include_ephemeral: true,
+                    ..Default::default()
+                },
+                &r
+            ),
+            ["cs1"],
+            "root {}",
+            root.display()
+        );
+    }
+}
+
+#[test]
+fn crush_trace_uses_row_order_when_turns_share_a_second() {
+    // Crush stores second-resolution `created_at`; a prompt and its reply routinely share one.
+    let dir = TempDir::new().unwrap();
+    let data_dir = dir.path().join("p/.crush");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    {
+        let conn = Connection::open(data_dir.join("crush.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT, title TEXT NOT NULL, message_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, parts TEXT NOT NULL DEFAULT '[]', model TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, is_summary_message INTEGER DEFAULT 0 NOT NULL);
+             INSERT INTO sessions VALUES ('s', NULL, 't', 0, 100, 100);",
+        )
+        .unwrap();
+        for (id, role, parts) in [
+            (
+                "a1",
+                "user",
+                json!([{"type": "text", "data": {"text": "first question"}}]),
+            ),
+            (
+                "a2",
+                "assistant",
+                json!([{"type": "text", "data": {"text": "first answer"}}]),
+            ),
+            (
+                "a3",
+                "user",
+                json!([{"type": "text", "data": {"text": "SECOND_Q"}}]),
+            ),
+            (
+                "a4",
+                "assistant",
+                json!([{"type": "tool_call", "data": {"name": "SECOND_TOOLCALL"}}]),
+            ),
+            (
+                "a5",
+                "assistant",
+                json!([{"type": "text", "data": {"text": "second answer"}}]),
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, parts, created_at, updated_at) VALUES (?1, 's', ?2, ?3, 100, 100)",
+                params![id, role, parts.to_string()],
+            )
+            .unwrap();
+        }
+    }
+    let src = format!("{}#s", data_dir.join("crush.db").display());
+    let raw = extract_raw_trace(
+        AgentKind::Crush,
+        &src,
+        &SourceOffset::Item {
+            item_id: "a5".into(),
+        },
+        0,
+    )
+    .unwrap();
+    assert!(
+        raw.contains("SECOND_TOOLCALL") && raw.contains("second answer"),
+        "{raw}"
+    );
+    assert!(
+        !raw.contains("first answer") && !raw.contains("first question"),
+        "{raw}"
+    );
+    assert!(!raw.contains("SECOND_Q") || raw.contains("second answer"));
+}

@@ -844,3 +844,133 @@ fn cli_end_to_end_qwen_source() {
             .contains("QWEN_E2E_THOUGHT_NEVER_INDEX")
     );
 }
+
+/// Live pipeline for Crush (per-project SQLite + projects.json index) through real minsync.
+#[test]
+fn cli_end_to_end_crush_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let proj = tmp.path().join("work/proj");
+    let crush_dir = proj.join(".crush");
+    std::fs::create_dir_all(&crush_dir).unwrap();
+    {
+        let conn = Connection::open(crush_dir.join("crush.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT, title TEXT NOT NULL, message_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, parts TEXT NOT NULL DEFAULT '[]', model TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, is_summary_message INTEGER DEFAULT 0 NOT NULL);
+             INSERT INTO sessions VALUES ('crush-e2e-1', NULL, 'crush chat', 0, 1794576811, 1794576798);",
+        )
+        .unwrap();
+        for (id, role, parts, ts) in [
+            (
+                "c1",
+                "user",
+                json!([{"type": "text", "data": {"text": "crush_zephyr_probe 설명해줘"}}]),
+                1794576798,
+            ),
+            (
+                "c2",
+                "assistant",
+                json!([{"type": "reasoning", "data": {"thinking": "CRUSH_E2E_THINKING_NEVER_INDEX"}}, {"type": "tool_call", "data": {"name": "bash", "input": "CRUSH_E2E_TOOLCALL_NEVER_INDEX"}}]),
+                1794576799,
+            ),
+            (
+                "c3",
+                "tool",
+                json!([{"type": "tool_result", "data": {"content": "CRUSH_E2E_TOOLRESULT_NEVER_INDEX"}}]),
+                1794576800,
+            ),
+            (
+                "c4",
+                "assistant",
+                json!([{"type": "text", "data": {"text": "crush_zephyr_probe는 검증용 용어입니다."}}]),
+                1794576801,
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, parts, created_at, updated_at) VALUES (?1, 'crush-e2e-1', ?2, ?3, ?4, ?4)",
+                params![id, role, parts.to_string(), ts],
+            )
+            .unwrap();
+        }
+    }
+    let share = tmp.path().join("share/crush");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::write(
+        share.join("projects.json"),
+        json!({"projects": [{"path": proj, "data_dir": crush_dir}]}).to_string(),
+    )
+    .unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("crush={}", share.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .arg("--include-ephemeral")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let run_plain = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    // tmp dirs are "ephemeral" projects, so sync must opt in.
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 1);
+    assert_eq!(sync["total_messages"], 2);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run_plain(&[
+            "search", "keyword", q, "--agent", "crush", "--json",
+        ]))
+        .unwrap()
+    };
+    let hits = search("crush_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "crush");
+    assert_eq!(hits[0]["session_id"], "crush-e2e-1");
+    for noise in [
+        "CRUSH_E2E_THINKING_NEVER_INDEX",
+        "CRUSH_E2E_TOOLCALL_NEVER_INDEX",
+        "CRUSH_E2E_TOOLRESULT_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value = serde_json::from_slice(&run_plain(&[
+        "trace",
+        "crush:crush-e2e-1",
+        "--turn",
+        "2",
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("CRUSH_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}

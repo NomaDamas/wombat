@@ -40,6 +40,8 @@ pub struct SourcesConfig {
     #[serde(default)]
     pub aside: Option<Vec<PathBuf>>,
     #[serde(default)]
+    pub crush: Option<Vec<PathBuf>>,
+    #[serde(default)]
     pub qwen: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub kilo: Option<Vec<PathBuf>>,
@@ -134,6 +136,7 @@ impl RuntimeConfig {
                     Some(AgentKind::Omp) => explicit.omp.push(path),
                     Some(AgentKind::Hermes) => explicit.hermes.push(path),
                     Some(AgentKind::Aside) => explicit.aside.push(path),
+                    Some(AgentKind::Crush) => explicit.crush.push(path),
                     Some(AgentKind::Qwen) => explicit.qwen.push(path),
                     Some(AgentKind::Kilo) => explicit.kilo.push(path),
                     Some(AgentKind::Gemini) => explicit.gemini.push(path),
@@ -164,6 +167,9 @@ impl RuntimeConfig {
             if let Some(v) = file_cfg.sources.aside {
                 base.aside = v;
             }
+            if let Some(v) = file_cfg.sources.crush {
+                base.crush = v;
+            }
             if let Some(v) = file_cfg.sources.qwen {
                 base.qwen = v;
             }
@@ -184,6 +190,7 @@ impl RuntimeConfig {
         roots.omp.sort();
         roots.hermes.sort();
         roots.aside.sort();
+        roots.crush.sort();
         roots.qwen.sort();
         roots.kilo.sort();
         roots.gemini.sort();
@@ -231,6 +238,8 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.kilo.push(path.to_path_buf());
     } else if s.contains("qwen") {
         roots.qwen.push(path.to_path_buf());
+    } else if s.contains("crush") {
+        roots.crush.push(path.to_path_buf());
     } else if s.contains("aside") {
         roots.aside.push(path.to_path_buf());
     } else if s.contains("hermes") {
