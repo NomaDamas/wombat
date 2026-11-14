@@ -1,0 +1,124 @@
+{
+ "sessionId": "d3f600b1-a62c-4aca-a01d-c811cd223dc6",
+ "title": "MOCKREPLY 응답입니다: Given the following... please reply with a title for the chat that is 3-4 words",
+ "workspaceDirectory": "/private/tmp/qa-home-cn/proj",
+ "history": [
+  {
+   "message": {
+    "role": "user",
+    "content": "qa_cn_alpha 라는 단어를 설명해줘"
+   },
+   "contextItems": [],
+   "editorState": "qa_cn_alpha 라는 단어를 설명해줘"
+  },
+  {
+   "message": {
+    "role": "assistant",
+    "content": "MOCKREPLY 응답입니다: qa_cn_alpha 라는 단어를 설명해줘",
+    "usage": {
+     "prompt_tokens": 5,
+     "completion_tokens": 7,
+     "total_tokens": 12,
+     "model": "mock-2026",
+     "cost_cents": 0
+    }
+   },
+   "contextItems": []
+  },
+  {
+   "message": {
+    "role": "user",
+    "content": "qa_cn_beta 두번째 질문"
+   },
+   "contextItems": [],
+   "editorState": "qa_cn_beta 두번째 질문"
+  },
+  {
+   "message": {
+    "role": "assistant",
+    "content": "MOCKREPLY 응답입니다: qa_cn_beta 두번째 질문",
+    "usage": {
+     "prompt_tokens": 5,
+     "completion_tokens": 7,
+     "total_tokens": 12,
+     "model": "mock-2026",
+     "cost_cents": 0
+    }
+   },
+   "contextItems": []
+  },
+  {
+   "message": {
+    "role": "user",
+    "content": "TOOLTEST qa_cn_gamma run echo"
+   },
+   "contextItems": [],
+   "editorState": "TOOLTEST qa_cn_gamma run echo"
+  },
+  {
+   "message": {
+    "role": "assistant",
+    "content": "",
+    "toolCalls": [
+     {
+      "id": "call_mock_1",
+      "type": "function",
+      "function": {
+       "name": "Read",
+       "arguments": "{\"command\":\"echo TOOLRESULT_MARKER\",\"path\":\"/tmp\"}"
+      }
+     }
+    ]
+   },
+   "contextItems": [],
+   "toolCallStates": [
+    {
+     "toolCallId": "call_mock_1",
+     "toolCall": {
+      "id": "call_mock_1",
+      "type": "function",
+      "function": {
+       "name": "Read",
+       "arguments": "{\"command\":\"echo TOOLRESULT_MARKER\",\"path\":\"/tmp\"}"
+      }
+     },
+     "status": "errored",
+     "parsedArgs": {
+      "command": "echo TOOLRESULT_MARKER",
+      "path": "/tmp"
+     },
+     "output": [
+      {
+       "content": "Required parameter \"filepath\" missing for tool \"Read\"",
+       "name": "Tool Result",
+       "description": "Tool execution result"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "message": {
+    "role": "assistant",
+    "content": "MOCKREPLY 응답입니다: TOOLTEST qa_cn_gamma run echo",
+    "usage": {
+     "prompt_tokens": 5,
+     "completion_tokens": 7,
+     "total_tokens": 12,
+     "model": "mock-2026",
+     "cost_cents": 0
+    }
+   },
+   "contextItems": []
+  }
+ ],
+ "usage": {
+  "totalCost": 5.7e-05,
+  "promptTokens": 15,
+  "completionTokens": 21,
+  "promptTokensDetails": {
+   "cachedTokens": 0,
+   "cacheWriteTokens": 0
+  }
+ }
+}

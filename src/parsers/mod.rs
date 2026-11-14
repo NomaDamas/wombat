@@ -1,6 +1,7 @@
 pub mod aside;
 pub mod claude_code;
 pub mod codex;
+pub mod continue_cli;
 pub mod copilot;
 pub mod crush;
 pub mod gemini;
@@ -40,6 +41,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub continue_cli: Vec<PathBuf>,
     pub copilot: Vec<PathBuf>,
     pub crush: Vec<PathBuf>,
     pub qwen: Vec<PathBuf>,
@@ -112,6 +114,12 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".copilot"));
             push_if_exists(&mut roots.copilot, copilot_home);
 
+            // Continue CLI
+            let continue_cli_home = std::env::var_os("CONTINUE_GLOBAL_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".continue"));
+            push_if_exists(&mut roots.continue_cli, continue_cli_home);
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -133,6 +141,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Continue => &self.continue_cli,
             AgentKind::Copilot => &self.copilot,
             AgentKind::Crush => &self.crush,
             AgentKind::Qwen => &self.qwen,
@@ -169,6 +178,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Continue => continue_cli::discover(root)?,
                 AgentKind::Copilot => copilot::discover(root)?,
                 AgentKind::Crush => crush::discover(root, opts)?,
                 AgentKind::Qwen => qwen::discover(root)?,
@@ -192,6 +202,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Continue => continue_cli::parse_file(&candidate.fs_path, opts),
         AgentKind::Copilot => copilot::parse_file(&candidate.fs_path, opts),
         AgentKind::Crush => crush::parse_candidate(candidate, opts),
         AgentKind::Qwen => qwen::parse_file(&candidate.fs_path, opts),
@@ -243,6 +254,7 @@ pub fn extract_raw_trace(
                 opencode::extract_raw_item(source_path, item_id)
             }
             AgentKind::Hermes => hermes::extract_raw_item(source_path, item_id),
+            AgentKind::Continue => continue_cli::extract_raw_item(source_path, item_id),
             AgentKind::Crush => crush::extract_raw_item(source_path, item_id),
             _ => Ok(format!("source_path={source_path} item_id={item_id}")),
         },

@@ -2187,3 +2187,156 @@ fn copilot_roots_resolve_from_home_session_state_or_session_dir() {
         );
     }
 }
+
+#[test]
+fn continue_real_recorded_session_keeps_user_and_assistant_text_only() {
+    // Files copied verbatim from a session the real Continue CLI 1.5.47 wrote, including a real
+    // tool-calling turn (assistant message with empty content + `toolCalls`).
+    let dir = TempDir::new().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let id = "d3f600b1-a62c-4aca-a01d-c811cd223dc6";
+    std::fs::copy(
+        fx.join("continue_real_session.json"),
+        sessions.join(format!("{id}.json")),
+    )
+    .unwrap();
+    std::fs::copy(
+        fx.join("continue_real_sessions_index.json"),
+        sessions.join("sessions.json"),
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        continue_cli: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture workspace is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(
+        cands.len(),
+        1,
+        "sessions.json index must not be treated as a session"
+    );
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected continue session");
+    };
+    assert_eq!(s.agent, AgentKind::Continue);
+    assert_eq!(s.session_id, id);
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-cn/proj"));
+    assert_eq!(s.started_at.as_deref(), Some("2026-11-13T13:52:56.115Z"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(got.len(), 6, "{got:?}"); // tool-only assistant message is dropped
+    assert_eq!(got[0], (Role::User, "qa_cn_alpha 라는 단어를 설명해줘"));
+    assert_eq!(got[4], (Role::User, "TOOLTEST qa_cn_gamma run echo"));
+    assert!(got[5].1.starts_with("MOCKREPLY"));
+    let mirror = render_mirror(&s).content;
+    assert!(
+        !mirror.contains("TOOLRESULT_MARKER"),
+        "tool call arguments leaked"
+    );
+    // Trace of an assistant turn returns the whole history entry, tool calls included.
+    let raw = extract_raw_trace(
+        AgentKind::Continue,
+        &s.source_path,
+        &s.turns[5].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("MOCKREPLY"), "{raw}");
+    let raw_prev = extract_raw_trace(
+        AgentKind::Continue,
+        &s.source_path,
+        &SourceOffset::Item {
+            item_id: "5".into(),
+        },
+        0,
+    )
+    .unwrap();
+    assert!(raw_prev.contains("TOOLRESULT_MARKER"), "{raw_prev}");
+}
+
+#[test]
+fn continue_skips_empty_and_ephemeral_sessions_and_handles_array_content() {
+    let dir = TempDir::new().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let h = |role: &str, content: serde_json::Value| json!({"message": {"role": role, "content": content}, "contextItems": []});
+    std::fs::write(
+        sessions.join("s1.json"),
+        json!({"sessionId": "s1", "title": "chat one", "workspaceDirectory": "/Users/a/proj", "history": [
+            h("user", json!("continue_q1")),
+            h("assistant", json!([{"type": "text", "text": "continue_a1"}, {"type": "imageUrl", "imageUrl": {"url": "CONTINUE_IMAGE_NOISE"}}])),
+            h("system", json!("CONTINUE_SYSTEM_NOISE")),
+            h("tool", json!("CONTINUE_TOOLRESULT_NOISE")),
+            h("assistant", json!("")),
+        ]}).to_string(),
+    ).unwrap();
+    std::fs::write(
+        sessions.join("empty.json"),
+        json!({"sessionId": "empty", "workspaceDirectory": "/Users/a/p", "history": []})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(sessions.join("tmp.json"), json!({"sessionId": "tmp", "workspaceDirectory": "/tmp/scratch", "history": [h("user", json!("tmp q"))]}).to_string()).unwrap();
+    let roots = SourceRoots {
+        continue_cli: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    assert_eq!(s.title.as_deref(), Some("chat one"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "continue_q1"),
+            (Role::Assistant, "continue_a1")
+        ]
+    );
+    let mirror = render_mirror(s).content;
+    for n in [
+        "CONTINUE_IMAGE_NOISE",
+        "CONTINUE_SYSTEM_NOISE",
+        "CONTINUE_TOOLRESULT_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+}
+
+#[test]
+fn continue_roots_accept_home_or_sessions_dir() {
+    let dir = TempDir::new().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(
+        sessions.join("a.json"),
+        json!({"sessionId": "a", "workspaceDirectory": "/Users/a/p", "history": [{"message": {"role": "user", "content": "hi"}}]}).to_string(),
+    ).unwrap();
+    for root in [dir.path().to_path_buf(), sessions.clone()] {
+        let roots = SourceRoots {
+            continue_cli: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}
