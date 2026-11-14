@@ -2994,3 +2994,243 @@ fn vibe_roots_accept_vibe_home_session_dir_or_a_single_store() {
         );
     }
 }
+
+#[test]
+fn goose_real_recorded_db_keeps_visible_user_and_assistant_text_only() {
+    // Rows copied from the sessions.db the real Goose 1.59.0 CLI wrote (stub endpoint): each user
+    // prompt is followed by an invisible `<turn-context>` user row (metadata `turnContext: true`),
+    // and a real tool turn is `assistant toolRequest` -> `user toolResponse` -> assistant text.
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join("data/sessions");
+    std::fs::create_dir_all(&data).unwrap();
+    let conn = Connection::open(data.join("sessions.db")).unwrap();
+    conn.execute_batch(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/goose_real_sessions.sql"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    drop(conn);
+    let roots = SourceRoots {
+        goose: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture working_dir is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    let mut sessions: Vec<_> = cands
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    // 20261113_1 is a hidden session (`session_type = 'hidden'`) and must be skipped.
+    assert_eq!(
+        sessions.len(),
+        1,
+        "{:?}",
+        sessions.iter().map(|s| &s.session_id).collect::<Vec<_>>()
+    );
+    let s = &sessions[0];
+    assert_eq!(s.agent, AgentKind::Goose);
+    assert_eq!(s.session_id, "20261113_2");
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-goose/proj"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got.len(),
+        2,
+        "turn-context / toolRequest / toolResponse must not be turns: {got:?}"
+    );
+    assert_eq!(
+        got[0],
+        (Role::User, "TOOLTEST qa_goose_beta 셸로 echo 실행해줘")
+    );
+    assert!(got[1].1.starts_with("MOCKREPLY"));
+    // The invisible `<turn-context>` user row is dropped. (The stub echoes its input, so the
+    // *assistant* text may legitimately contain the marker; only user turns are checked.)
+    assert!(
+        s.turns
+            .iter()
+            .filter(|t| t.role == Role::User)
+            .all(|t| !t.text.contains("<turn-context>")),
+        "injected turn context became a user turn"
+    );
+    // Trace of the assistant reply includes the real toolRequest/toolResponse rows.
+    let raw = extract_raw_trace(
+        AgentKind::Goose,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(
+        raw.contains("toolRequest") && raw.contains("toolResponse"),
+        "{raw}"
+    );
+}
+
+#[test]
+fn goose_skips_hidden_and_subagent_sessions_and_tool_rows_and_ephemeral_dirs() {
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join("sessions");
+    std::fs::create_dir_all(&data).unwrap();
+    let conn = Connection::open(data.join("sessions.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, parent_session_id TEXT);
+         CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT NOT NULL, role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL, metadata_json TEXT);
+         INSERT INTO sessions VALUES ('g1', 'goose chat', '', 'user', '/Users/a/proj', '2026-11-13 14:00:00', '2026-11-13 14:05:00', NULL);
+         INSERT INTO sessions VALUES ('g-sub', 'sub', '', 'sub_agent', '/Users/a/proj', '2026-11-13 14:01:00', '2026-11-13 14:02:00', 'g1');
+         INSERT INTO sessions VALUES ('g-tmp', 'tmp', '', 'user', '/tmp/scratch', '2026-11-13 14:01:00', '2026-11-13 14:02:00', NULL);",
+    )
+    .unwrap();
+    let add = |sid: &str,
+               role: &str,
+               blocks: serde_json::Value,
+               ts: i64,
+               meta: serde_json::Value| {
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![sid, role, blocks.to_string(), ts, meta.to_string()],
+        )
+        .unwrap();
+    };
+    let vis = json!({"userVisible": true, "agentVisible": true});
+    add(
+        "g1",
+        "user",
+        json!([{"type": "text", "text": "goose_q1"}]),
+        1794579714,
+        vis.clone(),
+    );
+    add(
+        "g1",
+        "user",
+        json!([{"type": "text", "text": "GOOSE_TURNCONTEXT_NOISE"}]),
+        1794579715,
+        json!({"userVisible": false, "agentVisible": true, "turnContext": true}),
+    );
+    add(
+        "g1",
+        "assistant",
+        json!([{"type": "thinking", "thinking": "GOOSE_THINKING_NOISE"}, {"type": "text", "text": "goose_a1"}]),
+        1794579716,
+        vis.clone(),
+    );
+    add(
+        "g1",
+        "assistant",
+        json!([{"type": "toolRequest", "id": "t", "toolCall": {"value": {"name": "shell", "arguments": {"command": "GOOSE_TOOLCALL_NOISE"}}}}]),
+        1794579717,
+        vis.clone(),
+    );
+    add(
+        "g1",
+        "user",
+        json!([{"type": "toolResponse", "id": "t", "toolResult": {"value": {"content": [{"type": "text", "text": "GOOSE_TOOLRESULT_NOISE"}]}}}]),
+        1794579718,
+        vis.clone(),
+    );
+    add(
+        "g-sub",
+        "user",
+        json!([{"type": "text", "text": "subagent task"}]),
+        1794579720,
+        vis.clone(),
+    );
+    add(
+        "g-tmp",
+        "user",
+        json!([{"type": "text", "text": "tmp q"}]),
+        1794579721,
+        vis,
+    );
+    drop(conn);
+    let roots = SourceRoots {
+        goose: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let ids = |opts: &ParseOptions| {
+        let mut v: Vec<String> = discover_all(&roots, None, opts)
+            .unwrap()
+            .iter()
+            .filter_map(|c| match parse_candidate(c, opts).unwrap() {
+                ParseOutcome::Session(s) => Some(s.session_id),
+                ParseOutcome::Skipped { .. } => None,
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ids(&ParseOptions::default()), ["g1"]);
+    assert_eq!(
+        ids(&ParseOptions {
+            include_subagents: true,
+            include_ephemeral: true
+        }),
+        ["g-sub", "g-tmp", "g1"]
+    );
+    let opts = ParseOptions::default();
+    let cand = discover_all(&roots, None, &opts)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.inner_id.as_deref() == Some("g1"))
+        .unwrap();
+    let ParseOutcome::Session(s) = parse_candidate(&cand, &opts).unwrap() else {
+        panic!("expected goose session");
+    };
+    assert_eq!(s.title.as_deref(), Some("goose chat"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [(Role::User, "goose_q1"), (Role::Assistant, "goose_a1")]
+    );
+    let mirror = render_mirror(&s).content;
+    for n in [
+        "GOOSE_TURNCONTEXT_NOISE",
+        "GOOSE_THINKING_NOISE",
+        "GOOSE_TOOLCALL_NOISE",
+        "GOOSE_TOOLRESULT_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+}
+
+#[test]
+fn goose_roots_accept_data_home_sessions_dir_or_db_file() {
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join("data/sessions");
+    std::fs::create_dir_all(&data).unwrap();
+    let conn = Connection::open(data.join("sessions.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL, created_at TIMESTAMP, updated_at TIMESTAMP, parent_session_id TEXT);
+         CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT NOT NULL, role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL, metadata_json TEXT);
+         INSERT INTO sessions VALUES ('gr', 't', 'user', '/Users/a/p', '2026-11-13 14:00:00', '2026-11-13 14:05:00', NULL);
+         INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json) VALUES ('gr', 'user', '[{\"type\":\"text\",\"text\":\"hi\"}]', 1794579714, '{\"userVisible\":true}');",
+    )
+    .unwrap();
+    drop(conn);
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("data"),
+        data.clone(),
+        data.join("sessions.db"),
+    ] {
+        let roots = SourceRoots {
+            goose: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}

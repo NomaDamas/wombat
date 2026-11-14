@@ -1549,3 +1549,138 @@ fn cli_end_to_end_vibe_source() {
             .contains("VIBE_E2E_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// Live pipeline for Goose's `sessions.db` (SQLite) through real minsync.
+#[test]
+fn cli_end_to_end_goose_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let goose = tmp.path().join("goose");
+    let sessions = goose.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    {
+        let conn = Connection::open(sessions.join("sessions.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL, created_at TIMESTAMP, updated_at TIMESTAMP, parent_session_id TEXT);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT NOT NULL, role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL, metadata_json TEXT);
+             INSERT INTO sessions VALUES ('goose-e2e-1', 'goose chat', 'user', '/Users/a/proj', '2026-11-13 14:00:00', '2026-11-13 14:05:00', NULL);
+             INSERT INTO sessions VALUES ('goose-hidden', 'title gen', 'hidden', '/Users/a/proj', '2026-11-13 14:00:00', '2026-11-13 14:05:00', NULL);",
+        )
+        .unwrap();
+        let add = |sid: &str, role: &str, blocks: Value, ts: i64, meta: Value| {
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![sid, role, blocks.to_string(), ts, meta.to_string()],
+            )
+            .unwrap();
+        };
+        let vis = json!({"userVisible": true, "agentVisible": true});
+        add(
+            "goose-e2e-1",
+            "user",
+            json!([{"type": "text", "text": "goose_zephyr_probe 설명해줘"}]),
+            1794579714,
+            vis.clone(),
+        );
+        add(
+            "goose-e2e-1",
+            "user",
+            json!([{"type": "text", "text": "<turn-context> GOOSE_E2E_CONTEXT_NEVER_INDEX </turn-context>"}]),
+            1794579715,
+            json!({"userVisible": false, "agentVisible": true, "turnContext": true}),
+        );
+        add(
+            "goose-e2e-1",
+            "assistant",
+            json!([{"type": "toolRequest", "id": "t", "toolCall": {"value": {"name": "shell", "arguments": {"command": "GOOSE_E2E_TOOLCALL_NEVER_INDEX"}}}}]),
+            1794579716,
+            vis.clone(),
+        );
+        add(
+            "goose-e2e-1",
+            "user",
+            json!([{"type": "toolResponse", "id": "t", "toolResult": {"value": {"content": [{"type": "text", "text": "GOOSE_E2E_TOOLRESULT_NEVER_INDEX"}]}}}]),
+            1794579717,
+            vis.clone(),
+        );
+        add(
+            "goose-e2e-1",
+            "assistant",
+            json!([{"type": "text", "text": "goose_zephyr_probe는 검증용 용어입니다."}]),
+            1794579718,
+            vis.clone(),
+        );
+        add(
+            "goose-hidden",
+            "user",
+            json!([{"type": "text", "text": "GOOSE_E2E_HIDDEN_NEVER_INDEX"}]),
+            1794579719,
+            vis,
+        );
+    }
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("goose={}", goose.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(
+        sync["total_sessions"], 1,
+        "hidden sessions must not be indexed"
+    );
+    assert_eq!(sync["total_messages"], 2);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&[
+            "search", "keyword", q, "--agent", "goose", "--json",
+        ]))
+        .unwrap()
+    };
+    let hits = search("goose_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "goose");
+    assert_eq!(hits[0]["session_id"], "goose-e2e-1");
+    assert_eq!(hits[0]["title"], "goose chat");
+    for noise in [
+        "GOOSE_E2E_CONTEXT_NEVER_INDEX",
+        "GOOSE_E2E_TOOLCALL_NEVER_INDEX",
+        "GOOSE_E2E_TOOLRESULT_NEVER_INDEX",
+        "GOOSE_E2E_HIDDEN_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value = serde_json::from_slice(&run(&[
+        "trace",
+        "goose:goose-e2e-1",
+        "--turn",
+        "2",
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("GOOSE_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}
