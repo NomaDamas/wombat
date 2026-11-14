@@ -17,16 +17,34 @@ use std::time::UNIX_EPOCH;
 /// 1. `<root>/opencode*.db` SQLite database (`session_v2`/`session_message` or `session`/`message`/`part`), or a direct `.db` path.
 /// 2. Legacy JSON file tree `<root>/storage/session/<project>/<sid>.json` (or `<root>/session/...`).
 pub fn discover(root: &Path, opts: &ParseOptions) -> Result<Vec<SourceCandidate>> {
+    discover_as(AgentKind::OpenCode, "opencode", root, opts)
+}
+
+/// Kilo Code is an OpenCode fork: same `session`/`message`/`part` tables in `kilo*.db`, but its
+/// sessions are a separate agent (`kilo:<id>`), never mixed into `opencode`.
+pub fn discover_kilo(root: &Path, opts: &ParseOptions) -> Result<Vec<SourceCandidate>> {
+    discover_as(AgentKind::Kilo, "kilo", root, opts)
+}
+
+fn discover_as(
+    agent: AgentKind,
+    db_prefix: &str,
+    root: &Path,
+    opts: &ParseOptions,
+) -> Result<Vec<SourceCandidate>> {
     if !root.exists() {
         return Ok(Vec::new());
     }
-    let db_files = find_opencode_dbs(root);
+    let db_files = find_dbs(root, db_prefix);
     if !db_files.is_empty() {
         let mut out = Vec::new();
         for db_path in db_files {
-            out.extend(discover_from_sqlite(&db_path, opts)?);
+            out.extend(discover_from_sqlite(agent, &db_path, opts)?);
         }
         return Ok(out);
+    }
+    if agent != AgentKind::OpenCode {
+        return Ok(Vec::new());
     }
 
     let storage_root = if root.join("storage").is_dir() {
@@ -37,7 +55,7 @@ pub fn discover(root: &Path, opts: &ParseOptions) -> Result<Vec<SourceCandidate>
     discover_from_json_storage(&storage_root, opts)
 }
 
-fn find_opencode_dbs(root: &Path) -> Vec<PathBuf> {
+fn find_dbs(root: &Path, db_prefix: &str) -> Vec<PathBuf> {
     if root.is_file() {
         return vec![root.to_path_buf()];
     }
@@ -51,7 +69,7 @@ fn find_opencode_dbs(root: &Path) -> Vec<PathBuf> {
             p.is_file()
                 && p.file_name().and_then(|s| s.to_str()).is_some_and(|n| {
                     let low = n.to_ascii_lowercase();
-                    low.starts_with("opencode") && low.ends_with(".db")
+                    low.starts_with(db_prefix) && low.ends_with(".db")
                 })
         })
         .collect();
@@ -59,7 +77,11 @@ fn find_opencode_dbs(root: &Path) -> Vec<PathBuf> {
     dbs
 }
 
-fn discover_from_sqlite(db_path: &Path, opts: &ParseOptions) -> Result<Vec<SourceCandidate>> {
+fn discover_from_sqlite(
+    agent: AgentKind,
+    db_path: &Path,
+    opts: &ParseOptions,
+) -> Result<Vec<SourceCandidate>> {
     let db = open_readonly_sqlite(db_path)?;
     let conn = &db.conn;
     let has_v2 = has_table(conn, "session_v2");
@@ -122,8 +144,8 @@ fn discover_from_sqlite(db_path: &Path, opts: &ParseOptions) -> Result<Vec<Sourc
             continue;
         }
         out.push(SourceCandidate {
-            agent: AgentKind::OpenCode,
-            item_key: format!("opencode/{db_hash}/{}", safe_component(&sid, 120)),
+            agent,
+            item_key: format!("{}/{db_hash}/{}", agent.as_str(), safe_component(&sid, 120)),
             version: format!("ocdb:{updated_ms}:{msg_count}"),
             source_path: format!("{}#{sid}", db_path.display()),
             fs_path: db_path.to_path_buf(),
@@ -229,13 +251,18 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         });
     };
     if candidate.fs_path.is_file() {
-        parse_sqlite_session(&candidate.fs_path, sid, opts)
+        parse_sqlite_session(candidate.agent, &candidate.fs_path, sid, opts)
     } else {
         parse_json_storage_session(&candidate.fs_path, &candidate.source_path, sid, opts)
     }
 }
 
-fn parse_sqlite_session(db_path: &Path, sid: &str, opts: &ParseOptions) -> Result<ParseOutcome> {
+fn parse_sqlite_session(
+    agent: AgentKind,
+    db_path: &Path,
+    sid: &str,
+    opts: &ParseOptions,
+) -> Result<ParseOutcome> {
     let db = open_readonly_sqlite(db_path)?;
     let conn = &db.conn;
     if has_table(conn, "session_v2")
@@ -247,12 +274,13 @@ fn parse_sqlite_session(db_path: &Path, sid: &str, opts: &ParseOptions) -> Resul
             )
             .is_ok()
     {
-        return parse_sqlite_v2(conn, db_path, sid, opts);
+        return parse_sqlite_v2(agent, conn, db_path, sid, opts);
     }
-    parse_sqlite_v1(conn, db_path, sid, opts)
+    parse_sqlite_v1(agent, conn, db_path, sid, opts)
 }
 
 fn parse_sqlite_v2(
+    agent: AgentKind,
     conn: &Connection,
     db_path: &Path,
     sid: &str,
@@ -352,7 +380,7 @@ fn parse_sqlite_v2(
     }
 
     Ok(ParseOutcome::Session(ParsedSession {
-        agent: AgentKind::OpenCode,
+        agent,
         session_id: sid.to_string(),
         source_path: format!("{}#{sid}", db_path.display()),
         cwd: (!directory.is_empty()).then_some(directory),
@@ -366,6 +394,7 @@ fn parse_sqlite_v2(
 }
 
 fn parse_sqlite_v1(
+    agent: AgentKind,
     conn: &Connection,
     db_path: &Path,
     sid: &str,
@@ -482,7 +511,7 @@ fn parse_sqlite_v1(
     }
 
     Ok(ParseOutcome::Session(ParsedSession {
-        agent: AgentKind::OpenCode,
+        agent,
         session_id: sid.to_string(),
         source_path: format!("{}#{sid}", db_path.display()),
         cwd: final_cwd,

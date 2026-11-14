@@ -1347,3 +1347,177 @@ fn gemini_roots_resolve_from_home_tmp_or_chats_dir() {
         );
     }
 }
+
+/// Kilo Code 7.8 stores sessions in `<data>/kilo/kilo.db` using the OpenCode v1 tables
+/// (`session`/`message`/`part`); columns and JSON shapes below match a live TUI run.
+fn kilo_fixture(dir: &Path) -> std::path::PathBuf {
+    let db_path = dir.join("kilo.db");
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, time_archived INTEGER);
+         CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+         CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);",
+    )
+    .unwrap();
+    conn.execute("INSERT INTO session VALUES ('ses_k1', 'p', NULL, 's', '/Users/a/proj', 'kilo chat', '7.8.27', 1794577663297, 1794577679646, NULL)", []).unwrap();
+    conn.execute("INSERT INTO session VALUES ('ses_k2', 'p', 'ses_k1', 's2', '/Users/a/proj', 'child', '7.8.27', 1794577663300, 1794577679600, NULL)", []).unwrap();
+    let msg = |id: &str, sid: &str, ts: i64, data: serde_json::Value| {
+        conn.execute(
+            "INSERT INTO message VALUES (?1, ?2, ?3, ?3, ?4)",
+            params![id, sid, ts, data.to_string()],
+        )
+        .unwrap();
+    };
+    let part = |id: &str, mid: &str, sid: &str, ts: i64, data: serde_json::Value| {
+        conn.execute(
+            "INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![id, mid, sid, ts, data.to_string()],
+        )
+        .unwrap();
+    };
+    msg(
+        "m1",
+        "ses_k1",
+        1794577663321,
+        json!({"role": "user", "time": {"created": 1794577663321i64}, "agent": "code"}),
+    );
+    part(
+        "p1",
+        "m1",
+        "ses_k1",
+        1794577663322,
+        json!({"type": "text", "text": "kilo_alpha 가 뭐야?"}),
+    );
+    msg(
+        "m2",
+        "ses_k1",
+        1794577663400,
+        json!({"role": "assistant", "parentID": "m1", "time": {"created": 1794577663400i64}}),
+    );
+    part(
+        "p2",
+        "m2",
+        "ses_k1",
+        1794577663401,
+        json!({"type": "step-start"}),
+    );
+    part(
+        "p3",
+        "m2",
+        "ses_k1",
+        1794577663402,
+        json!({"type": "reasoning", "text": "KILO_REASONING_NOISE"}),
+    );
+    part(
+        "p4",
+        "m2",
+        "ses_k1",
+        1794577663403,
+        json!({"type": "tool", "tool": "bash", "callID": "c1", "state": {"status": "completed", "input": {"command": "KILO_TOOLCALL_NOISE"}, "output": "KILO_TOOLRESULT_NOISE"}}),
+    );
+    part(
+        "p5",
+        "m2",
+        "ses_k1",
+        1794577663404,
+        json!({"type": "text", "text": "kilo_alpha는 테스트 용어입니다."}),
+    );
+    part(
+        "p6",
+        "m2",
+        "ses_k1",
+        1794577663405,
+        json!({"type": "step-finish", "reason": "stop"}),
+    );
+    msg(
+        "m3",
+        "ses_k2",
+        1794577663500,
+        json!({"role": "user", "time": {"created": 1794577663500i64}}),
+    );
+    part(
+        "p7",
+        "m3",
+        "ses_k2",
+        1794577663501,
+        json!({"type": "text", "text": "child task"}),
+    );
+    db_path
+}
+
+#[test]
+fn kilo_reads_kilo_db_as_its_own_agent_with_opencode_semantics() {
+    let dir = TempDir::new().unwrap();
+    kilo_fixture(dir.path());
+    let roots = SourceRoots {
+        kilo: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert!(cands.iter().all(|c| c.agent == AgentKind::Kilo));
+    assert_eq!(cands.len(), 1, "child session skipped by default");
+    assert!(cands[0].item_key.starts_with("kilo/"));
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected kilo session");
+    };
+    assert_eq!(s.agent, AgentKind::Kilo);
+    assert_eq!(s.session_id, "ses_k1");
+    assert_eq!(s.catalog_key(), "kilo:ses_k1");
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "kilo_alpha 가 뭐야?"),
+            (Role::Assistant, "kilo_alpha는 테스트 용어입니다."),
+        ]
+    );
+    let mirror = render_mirror(&s).content;
+    for n in [
+        "KILO_REASONING_NOISE",
+        "KILO_TOOLCALL_NOISE",
+        "KILO_TOOLRESULT_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+    let raw = extract_raw_trace(
+        AgentKind::Kilo,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("KILO_TOOLCALL_NOISE"), "{raw}");
+}
+
+#[test]
+fn kilo_roots_accept_data_dir_or_db_file_and_do_not_capture_opencode_dbs() {
+    let dir = TempDir::new().unwrap();
+    kilo_fixture(dir.path());
+    // An OpenCode DB living in the same folder must stay an OpenCode source.
+    std::fs::copy(dir.path().join("kilo.db"), dir.path().join("opencode.db")).unwrap();
+    let opts = ParseOptions {
+        include_ephemeral: true,
+        ..Default::default()
+    };
+    for root in [dir.path().to_path_buf(), dir.path().join("kilo.db")] {
+        let roots = SourceRoots {
+            kilo: vec![root.clone()],
+            ..Default::default()
+        };
+        let cands = discover_all(&roots, None, &opts).unwrap();
+        assert_eq!(cands.len(), 1, "root {}", root.display());
+        assert_eq!(cands[0].agent, AgentKind::Kilo);
+    }
+    let oc = SourceRoots {
+        opencode: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let cands = discover_all(&oc, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1);
+    assert_eq!(cands[0].agent, AgentKind::OpenCode);
+    assert!(cands[0].source_path.contains("opencode.db"));
+}

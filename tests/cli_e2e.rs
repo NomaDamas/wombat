@@ -619,3 +619,132 @@ fn cli_end_to_end_gemini_source() {
             .contains("GEMINI_E2E_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// Kilo Code CLI shares OpenCode's tables but must index as its own agent, beside OpenCode.
+#[test]
+fn cli_end_to_end_kilo_source_stays_separate_from_opencode() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let kilo_dir = tmp.path().join("kilo");
+    let oc_dir = tmp.path().join("opencode");
+    std::fs::create_dir_all(&kilo_dir).unwrap();
+    std::fs::create_dir_all(&oc_dir).unwrap();
+    let mk = |db: &Path, sid: &str, user: &str, answer: &str, noise: &str| {
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO session VALUES (?1, 'p', NULL, 's', '/Users/a/proj', 't', '1', 1794577663297, 1794577679646)", params![sid]).unwrap();
+        let ins_m = |id: &str, ts: i64, data: Value| {
+            conn.execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3, ?3, ?4)",
+                params![id, sid, ts, data.to_string()],
+            )
+            .unwrap();
+        };
+        let ins_p = |id: &str, mid: &str, ts: i64, data: Value| {
+            conn.execute(
+                "INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+                params![id, mid, sid, ts, data.to_string()],
+            )
+            .unwrap();
+        };
+        ins_m(
+            "m1",
+            1794577663321,
+            json!({"role": "user", "time": {"created": 1794577663321i64}}),
+        );
+        ins_p(
+            "p1",
+            "m1",
+            1794577663322,
+            json!({"type": "text", "text": user}),
+        );
+        ins_m(
+            "m2",
+            1794577663400,
+            json!({"role": "assistant", "parentID": "m1", "time": {"created": 1794577663400i64}}),
+        );
+        ins_p(
+            "p2",
+            "m2",
+            1794577663401,
+            json!({"type": "tool", "tool": "bash", "callID": "c", "state": {"status": "completed", "input": {"command": noise}, "output": noise}}),
+        );
+        ins_p(
+            "p3",
+            "m2",
+            1794577663402,
+            json!({"type": "text", "text": answer}),
+        );
+    };
+    mk(
+        &kilo_dir.join("kilo.db"),
+        "ses_kilo_e2e",
+        "kilo_zephyr_probe 설명해줘",
+        "kilo_zephyr_probe는 검증용입니다.",
+        "KILO_E2E_TOOL_NEVER_INDEX",
+    );
+    mk(
+        &oc_dir.join("opencode.db"),
+        "ses_oc_e2e",
+        "opencode_zephyr_probe 설명해줘",
+        "opencode_zephyr_probe는 검증용입니다.",
+        "OC_E2E_TOOL_NEVER_INDEX",
+    );
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("kilo={}", kilo_dir.display()),
+        "--source",
+        &format!("opencode={}", oc_dir.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 2);
+    assert_eq!(sync["total_messages"], 4);
+    let search = |q: &str, agent: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&["search", "keyword", q, "--agent", agent, "--json"])).unwrap()
+    };
+    let k = search("kilo_zephyr_probe", "kilo");
+    assert_eq!(k[0]["agent"], "kilo");
+    assert_eq!(k[0]["session_id"], "ses_kilo_e2e");
+    assert!(
+        search("kilo_zephyr_probe", "kilo")
+            .iter()
+            .all(|h| h["agent"] == "kilo")
+    );
+    let o = search("opencode_zephyr_probe", "opencode");
+    assert_eq!(o[0]["agent"], "opencode");
+    assert!(o.iter().all(|h| h["agent"] == "opencode"));
+    for (noise, agent) in [
+        ("KILO_E2E_TOOL_NEVER_INDEX", "kilo"),
+        ("OC_E2E_TOOL_NEVER_INDEX", "opencode"),
+    ] {
+        assert!(
+            search(noise, agent)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+}

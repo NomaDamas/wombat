@@ -89,7 +89,7 @@ pub enum Commands {
 
 #[derive(Debug, Args)]
 pub struct SyncArgs {
-    /// Restrict discovery to specific agent(s): codex, claude-code, opencode, pi, omp, hermes, aside, gemini
+    /// Restrict discovery to specific agent(s): codex, claude-code, opencode, pi, omp, hermes, aside, kilo, gemini
     #[arg(long = "agent")]
     pub agents: Vec<String>,
 
