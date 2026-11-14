@@ -1,6 +1,7 @@
 pub mod aside;
 pub mod claude_code;
 pub mod codex;
+pub mod crush;
 pub mod gemini;
 pub mod hermes;
 pub mod opencode;
@@ -38,6 +39,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub crush: Vec<PathBuf>,
     pub qwen: Vec<PathBuf>,
     pub kilo: Vec<PathBuf>,
     pub gemini: Vec<PathBuf>,
@@ -96,6 +98,12 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".qwen"));
             push_if_exists(&mut roots.qwen, qwen_home);
 
+            // Crush (Charm): the shared project index; each project keeps its own `.crush/crush.db`.
+            let crush_share = std::env::var_os("XDG_DATA_HOME")
+                .map(|x| PathBuf::from(x).join("crush"))
+                .unwrap_or_else(|| h.join(".local").join("share").join("crush"));
+            push_if_exists(&mut roots.crush, crush_share);
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -117,6 +125,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Crush => &self.crush,
             AgentKind::Qwen => &self.qwen,
             AgentKind::Kilo => &self.kilo,
             AgentKind::Gemini => &self.gemini,
@@ -151,6 +160,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Crush => crush::discover(root, opts)?,
                 AgentKind::Qwen => qwen::discover(root)?,
                 AgentKind::Kilo => opencode::discover_kilo(root, opts)?,
                 AgentKind::Gemini => gemini::discover(root, opts)?,
@@ -172,6 +182,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Crush => crush::parse_candidate(candidate, opts),
         AgentKind::Qwen => qwen::parse_file(&candidate.fs_path, opts),
         AgentKind::Gemini => gemini::parse_file(&candidate.fs_path, opts),
     }
@@ -221,6 +232,7 @@ pub fn extract_raw_trace(
                 opencode::extract_raw_item(source_path, item_id)
             }
             AgentKind::Hermes => hermes::extract_raw_item(source_path, item_id),
+            AgentKind::Crush => crush::extract_raw_item(source_path, item_id),
             _ => Ok(format!("source_path={source_path} item_id={item_id}")),
         },
     }
