@@ -1,5 +1,6 @@
 pub mod aside;
 pub mod claude_code;
+pub mod codebuddy;
 pub mod codex;
 pub mod continue_cli;
 pub mod copilot;
@@ -41,6 +42,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub codebuddy: Vec<PathBuf>,
     pub iflow: Vec<PathBuf>,
     pub continue_cli: Vec<PathBuf>,
     pub copilot: Vec<PathBuf>,
@@ -124,6 +126,12 @@ impl SourceRoots {
             // iFlow CLI
             push_if_exists(&mut roots.iflow, h.join(".iflow").join("projects"));
 
+            // CodeBuddy
+            let codebuddy_home = std::env::var_os("CODEBUDDY_CONFIG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".codebuddy"));
+            push_if_exists(&mut roots.codebuddy, codebuddy_home);
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -145,6 +153,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Codebuddy => &self.codebuddy,
             AgentKind::Iflow => &self.iflow,
             AgentKind::Continue => &self.continue_cli,
             AgentKind::Copilot => &self.copilot,
@@ -189,6 +198,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Codebuddy => codebuddy::discover(root)?,
                 AgentKind::Iflow => {
                     claude_code::discover_as(AgentKind::Iflow, &iflow_projects(root), opts)?
                 }
@@ -216,6 +226,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Codebuddy => codebuddy::parse_file(&candidate.fs_path, opts),
         AgentKind::Iflow => claude_code::parse_file_as(AgentKind::Iflow, &candidate.fs_path, opts),
         AgentKind::Continue => continue_cli::parse_file(&candidate.fs_path, opts),
         AgentKind::Copilot => copilot::parse_file(&candidate.fs_path, opts),

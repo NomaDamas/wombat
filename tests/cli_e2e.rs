@@ -1267,3 +1267,98 @@ fn cli_end_to_end_iflow_source_stays_separate_from_claude_code() {
         );
     }
 }
+
+/// Live pipeline for CodeBuddy Code sessions through real minsync.
+#[test]
+fn cli_end_to_end_codebuddy_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let home = tmp.path().join("codebuddy");
+    let proj = home.join("projects/-Users-a-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let msg = |id: &str, role: &str, content: Value| json!({"id": id, "type": "message", "role": role, "timestamp": "1794578348516", "sessionId": "cb-e2e-1", "cwd": "/Users/a/proj", "content": content});
+    let lines = [
+        msg(
+            "1",
+            "user",
+            json!([{"type": "input_text", "text": "codebuddy_zephyr_probe 설명해줘"}]),
+        ),
+        json!({"type": "function_call", "id": "f", "callId": "c", "name": "Bash", "arguments": "{\"command\":\"CODEBUDDY_E2E_TOOLCALL_NEVER_INDEX\"}"}),
+        json!({"type": "function_call_result", "callId": "c", "name": "Bash", "status": "completed", "output": "CODEBUDDY_E2E_TOOLRESULT_NEVER_INDEX"}),
+        msg(
+            "2",
+            "assistant",
+            json!([{"type": "output_text", "text": "codebuddy_zephyr_probe는 검증용 용어입니다."}]),
+        ),
+        json!({"type": "summary", "id": "s", "summary": "CODEBUDDY_E2E_SUMMARY_NEVER_INDEX"}),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(proj.join("cb-e2e-1.jsonl"), body).unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("codebuddy={}", home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 1);
+    assert_eq!(sync["total_messages"], 2);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&[
+            "search",
+            "keyword",
+            q,
+            "--agent",
+            "codebuddy",
+            "--json",
+        ]))
+        .unwrap()
+    };
+    let hits = search("codebuddy_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "codebuddy");
+    assert_eq!(hits[0]["session_id"], "cb-e2e-1");
+    for noise in [
+        "CODEBUDDY_E2E_TOOLCALL_NEVER_INDEX",
+        "CODEBUDDY_E2E_TOOLRESULT_NEVER_INDEX",
+        "CODEBUDDY_E2E_SUMMARY_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value = serde_json::from_slice(&run(&[
+        "trace",
+        "codebuddy:cb-e2e-1",
+        "--turn",
+        "2",
+        "--context",
+        "3",
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("CODEBUDDY_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}
