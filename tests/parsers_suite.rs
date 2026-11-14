@@ -3234,3 +3234,190 @@ fn goose_roots_accept_data_home_sessions_dir_or_db_file() {
         );
     }
 }
+
+#[test]
+fn droid_real_recorded_session_keeps_only_the_typed_prompt_and_assistant_text() {
+    // Files copied from a session the real Droid 1.10.0 wrote (`droid exec`, custom model → stub).
+    // Droid also stores *user-role* messages it injected itself: a notice about the custom model,
+    // a `context-…` tool catalog message and an `__internal__system-reminder__…` message.
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("sessions/-private-tmp-qa-home-droid-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let id = "1f99413b-8c86-45db-afbd-cdd2695f1802";
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/droid_real");
+    for ext in ["jsonl", "settings.json"] {
+        std::fs::copy(
+            fx.join(format!("{id}.{ext}")),
+            proj.join(format!("{id}.{ext}")),
+        )
+        .unwrap();
+    }
+    // Droid also leaves a `.settings.json.bak` beside the session; it must not be a candidate.
+    std::fs::copy(
+        fx.join(format!("{id}.settings.json")),
+        proj.join(format!("{id}.settings.json.bak")),
+    )
+    .unwrap();
+    let roots = SourceRoots {
+        droid: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_ephemeral: true, // fixture cwd is under /private/tmp
+        ..Default::default()
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    assert_eq!(cands.len(), 1, "only <id>.jsonl is a session");
+    let ParseOutcome::Session(s) = parse_candidate(&cands[0], &opts).unwrap() else {
+        panic!("expected droid session");
+    };
+    assert_eq!(s.agent, AgentKind::Droid);
+    assert_eq!(s.session_id, id);
+    assert_eq!(s.cwd.as_deref(), Some("/private/tmp/qa-home-droid/proj"));
+    assert_eq!(
+        s.title.as_deref(),
+        Some("qa_droid_alpha 라는 단어를 설명해줘")
+    );
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(
+        got.len(),
+        2,
+        "injected user-role messages must not be turns: {got:?}"
+    );
+    assert_eq!(got[0], (Role::User, "qa_droid_alpha 라는 단어를 설명해줘"));
+    assert!(got[1].1.starts_with("MOCKREPLY"));
+    let mirror = render_mirror(&s).content;
+    for n in ["does not map to a built-in model", "Unified tool catalog"] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+    assert!(!s.turns[0].text.contains("system-reminder"));
+}
+
+#[test]
+fn droid_skips_injected_tool_and_ephemeral_and_reads_array_and_string_content() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("sessions/-Users-a-proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let msg = |id: &str, parent: &str, role: &str, content: serde_json::Value| json!({"type": "message", "id": id, "parentId": parent, "timestamp": "2026-11-13T14:26:28.034Z", "message": {"role": role, "content": content}});
+    write_jsonl_lines(
+        &proj.join("d1.jsonl"),
+        &[
+            json!({"type": "session_start", "id": "d1", "title": "droid chat", "cwd": "/Users/a/proj", "version": "2"}),
+            msg(
+                "context-x",
+                "p",
+                "user",
+                json!([{"type": "text", "text": "<system-reminder>DROID_CONTEXT_NOISE</system-reminder>"}]),
+            ),
+            msg(
+                "u1",
+                "context-x",
+                "user",
+                json!([{"type": "text", "text": "droid_q1"}]),
+            ),
+            msg(
+                "__internal__system-reminder__1",
+                "u1",
+                "user",
+                json!([{"type": "text", "text": "<system-reminder>DROID_INTERNAL_NOISE</system-reminder>"}]),
+            ),
+            msg(
+                "a1",
+                "u1",
+                "assistant",
+                json!([{"type": "thinking", "thinking": "DROID_THINKING_NOISE"}, {"type": "tool_use", "id": "t", "name": "Execute", "input": {"command": "DROID_TOOLCALL_NOISE"}}, {"type": "text", "text": "droid_a1"}]),
+            ),
+            msg(
+                "tr1",
+                "a1",
+                "user",
+                json!([{"type": "tool_result", "tool_use_id": "t", "content": "DROID_TOOLRESULT_NOISE"}]),
+            ),
+            msg("u2", "a1", "user", json!("plain string droid_q2")),
+            json!({"type": "agent_turn_outcome", "turnId": "u1", "reason": "completed"}),
+        ],
+    );
+    let tmp = dir.path().join("sessions/-tmp-x");
+    std::fs::create_dir_all(&tmp).unwrap();
+    write_jsonl_lines(
+        &tmp.join("d2.jsonl"),
+        &[
+            json!({"type": "session_start", "id": "d2", "title": "t", "cwd": "/tmp/scratch", "version": "2"}),
+            msg(
+                "u1",
+                "p",
+                "user",
+                json!([{"type": "text", "text": "tmp q"}]),
+            ),
+        ],
+    );
+    let roots = SourceRoots {
+        droid: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    let sessions: Vec<_> = discover_all(&roots, None, &opts)
+        .unwrap()
+        .iter()
+        .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+            ParseOutcome::Session(s) => Some(s),
+            ParseOutcome::Skipped { .. } => None,
+        })
+        .collect();
+    assert_eq!(sessions.len(), 1, "tmp-cwd session must be skipped");
+    let got: Vec<_> = sessions[0]
+        .turns
+        .iter()
+        .map(|t| (t.role, t.text.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "droid_q1"),
+            (Role::Assistant, "droid_a1"),
+            (Role::User, "plain string droid_q2"),
+        ]
+    );
+    let mirror = render_mirror(&sessions[0]).content;
+    for n in [
+        "DROID_CONTEXT_NOISE",
+        "DROID_INTERNAL_NOISE",
+        "DROID_THINKING_NOISE",
+        "DROID_TOOLCALL_NOISE",
+        "DROID_TOOLRESULT_NOISE",
+    ] {
+        assert!(!mirror.contains(n), "{n} leaked");
+    }
+}
+
+#[test]
+fn droid_roots_accept_factory_home_sessions_dir_or_project_dir() {
+    let dir = TempDir::new().unwrap();
+    let proj = dir.path().join("sessions/-Users-a-p");
+    std::fs::create_dir_all(&proj).unwrap();
+    write_jsonl_lines(
+        &proj.join("s.jsonl"),
+        &[
+            json!({"type": "session_start", "id": "s", "title": "t", "cwd": "/Users/a/p", "version": "2"}),
+            json!({"type": "message", "id": "u1", "timestamp": "2026-11-13T14:26:28.034Z", "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}}),
+        ],
+    );
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("sessions"),
+        proj.clone(),
+    ] {
+        let roots = SourceRoots {
+            droid: vec![root.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            discover_all(&roots, None, &ParseOptions::default())
+                .unwrap()
+                .len(),
+            1,
+            "root {}",
+            root.display()
+        );
+    }
+}

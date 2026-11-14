@@ -6,6 +6,7 @@ pub mod codex;
 pub mod continue_cli;
 pub mod copilot;
 pub mod crush;
+pub mod droid;
 pub mod gemini;
 pub mod goose;
 pub mod hermes;
@@ -45,6 +46,7 @@ pub struct SourceRoots {
     pub omp: Vec<PathBuf>,
     pub hermes: Vec<PathBuf>,
     pub aside: Vec<PathBuf>,
+    pub droid: Vec<PathBuf>,
     pub goose: Vec<PathBuf>,
     pub vibe: Vec<PathBuf>,
     pub aider: Vec<PathBuf>,
@@ -153,6 +155,12 @@ impl SourceRoots {
                 .unwrap_or_else(|| h.join(".local").join("share").join("goose"));
             push_if_exists(&mut roots.goose, goose_data);
 
+            // Droid
+            let droid_home = std::env::var_os("FACTORY_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".factory"));
+            push_if_exists(&mut roots.droid, droid_home);
+
             // Aside browser agent
             push_if_exists(&mut roots.aside, h.join(".aside"));
 
@@ -174,6 +182,7 @@ impl SourceRoots {
             AgentKind::Omp => &self.omp,
             AgentKind::Hermes => &self.hermes,
             AgentKind::Aside => &self.aside,
+            AgentKind::Droid => &self.droid,
             AgentKind::Goose => &self.goose,
             AgentKind::Vibe => &self.vibe,
             AgentKind::Aider => &self.aider,
@@ -222,6 +231,7 @@ pub fn discover_all(
                 AgentKind::Omp => pi::discover(root, AgentKind::Omp, opts)?,
                 AgentKind::Hermes => hermes::discover(root, opts)?,
                 AgentKind::Aside => aside::discover(root)?,
+                AgentKind::Droid => droid::discover(root)?,
                 AgentKind::Goose => goose::discover(root, opts)?,
                 AgentKind::Vibe => vibe::discover(root, opts)?,
                 AgentKind::Aider => aider::discover(root)?,
@@ -253,6 +263,7 @@ pub fn parse_candidate(candidate: &SourceCandidate, opts: &ParseOptions) -> Resu
         AgentKind::Omp => pi::parse_file(&candidate.fs_path, AgentKind::Omp, opts),
         AgentKind::Hermes => hermes::parse_candidate(candidate, opts),
         AgentKind::Aside => aside::parse_file(candidate, opts),
+        AgentKind::Droid => droid::parse_file(&candidate.fs_path, opts),
         AgentKind::Goose => goose::parse_candidate(candidate, opts),
         AgentKind::Vibe => vibe::parse_candidate(candidate, opts),
         AgentKind::Aider => aider::parse_candidate(candidate, opts),

@@ -1,0 +1,44 @@
+{
+ "assistantActiveTimeMs": 51,
+ "model": "custom:Mock-0",
+ "reasoningEffort": "none",
+ "interactionMode": "auto",
+ "autonomyLevel": "low",
+ "autonomyMode": "auto-low",
+ "compactionThresholdCheckEnabled": true,
+ "allowSubagentsInScripts": false,
+ "tags": [
+  {
+   "name": "exec"
+  }
+ ],
+ "toolExecutionMode": "direct_only",
+ "toolExecutionModeModelId": "custom:Mock-0",
+ "tokenUsage": {
+  "inputTokens": 5,
+  "outputTokens": 7,
+  "cacheCreationTokens": 0,
+  "cacheReadTokens": 0,
+  "thinkingTokens": 0,
+  "factoryCredits": 0
+ },
+ "childInclusiveTokenUsageBySessionId": {},
+ "inclusiveTokenUsage": {
+  "inputTokens": 5,
+  "outputTokens": 7,
+  "cacheCreationTokens": 0,
+  "cacheReadTokens": 0,
+  "thinkingTokens": 0,
+  "factoryCredits": 0
+ },
+ "providerLock": "generic-chat-completion-api",
+ "providerLockTimestamp": "2026-11-13T14:26:28.006Z",
+ "byokUnmappedNoticeModelIds": [
+  "custom:Mock-0"
+ ],
+ "lastCallTokenUsage": {
+  "inputTokens": 5,
+  "outputTokens": 7,
+  "cacheReadTokens": 0
+ }
+}
