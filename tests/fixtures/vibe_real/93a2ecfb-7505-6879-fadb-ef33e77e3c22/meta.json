@@ -1,0 +1,33 @@
+{
+  "session_id": "93a2ecfb-7505-6879-fadb-ef33e77e3c22",
+  "parent_session_id": null,
+  "start_time": "2026-11-13T14:17:22.777000+00:00",
+  "end_time": "2026-11-13T14:17:22.971000+00:00",
+  "git_commit": null,
+  "git_branch": null,
+  "environment": {
+    "working_directory": "/private/tmp/qa-home-vibe/proj"
+  },
+  "origin_directory": "/private/tmp/qa-home-vibe/proj",
+  "username": "jeffrey",
+  "child_sessions": [],
+  "loops": [],
+  "title": null,
+  "title_source": "auto",
+  "bumped_at": "2026-11-13T14:17:22.887523+00:00",
+  "pinned_at": null,
+  "archived_at": null,
+  "unseen_at": "2026-11-13T14:17:22.973283+00:00",
+  "seen_at": null,
+  "experiments": null,
+  "config": {
+    "active_model": "mock",
+    "model_name": "mock-2026"
+  },
+  "runtime_path": "direct",
+  "import_provenance": null,
+  "created_worktree": null,
+  "project": null,
+  "artifacts": [],
+  "worktrees": []
+}

@@ -13,6 +13,7 @@ pub enum AgentKind {
     Omp,
     Hermes,
     Aside,
+    Vibe,
     Aider,
     Codebuddy,
     Iflow,
@@ -25,7 +26,7 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    pub const ALL: [AgentKind; 16] = [
+    pub const ALL: [AgentKind; 17] = [
         AgentKind::Codex,
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
@@ -33,6 +34,7 @@ impl AgentKind {
         AgentKind::Omp,
         AgentKind::Hermes,
         AgentKind::Aside,
+        AgentKind::Vibe,
         AgentKind::Aider,
         AgentKind::Codebuddy,
         AgentKind::Iflow,
@@ -53,6 +55,7 @@ impl AgentKind {
             AgentKind::Omp => "omp",
             AgentKind::Hermes => "hermes",
             AgentKind::Aside => "aside",
+            AgentKind::Vibe => "vibe",
             AgentKind::Aider => "aider",
             AgentKind::Codebuddy => "codebuddy",
             AgentKind::Iflow => "iflow",
@@ -74,6 +77,7 @@ impl AgentKind {
             "omp" | "oh-my-pi" => Some(AgentKind::Omp),
             "hermes" | "hermes-agent" | "hermes_agent" => Some(AgentKind::Hermes),
             "aside" | "aside-browser" | "aside_browser" => Some(AgentKind::Aside),
+            "vibe" | "mistral-vibe" | "mistral_vibe" => Some(AgentKind::Vibe),
             "aider" | "aider-chat" => Some(AgentKind::Aider),
             "codebuddy" | "codebuddy-code" | "code-buddy" => Some(AgentKind::Codebuddy),
             "iflow" | "iflow-cli" => Some(AgentKind::Iflow),
