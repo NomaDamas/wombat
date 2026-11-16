@@ -40,6 +40,8 @@ pub struct SourcesConfig {
     #[serde(default)]
     pub aside: Option<Vec<PathBuf>>,
     #[serde(default)]
+    pub kiro: Option<Vec<PathBuf>>,
+    #[serde(default)]
     pub droid: Option<Vec<PathBuf>>,
     #[serde(default)]
     pub goose: Option<Vec<PathBuf>>,
@@ -152,6 +154,7 @@ impl RuntimeConfig {
                     Some(AgentKind::Omp) => explicit.omp.push(path),
                     Some(AgentKind::Hermes) => explicit.hermes.push(path),
                     Some(AgentKind::Aside) => explicit.aside.push(path),
+                    Some(AgentKind::Kiro) => explicit.kiro.push(path),
                     Some(AgentKind::Droid) => explicit.droid.push(path),
                     Some(AgentKind::Goose) => explicit.goose.push(path),
                     Some(AgentKind::Vibe) => explicit.vibe.push(path),
@@ -190,6 +193,9 @@ impl RuntimeConfig {
             }
             if let Some(v) = file_cfg.sources.aside {
                 base.aside = v;
+            }
+            if let Some(v) = file_cfg.sources.kiro {
+                base.kiro = v;
             }
             if let Some(v) = file_cfg.sources.droid {
                 base.droid = v;
@@ -238,6 +244,7 @@ impl RuntimeConfig {
         roots.omp.sort();
         roots.hermes.sort();
         roots.aside.sort();
+        roots.kiro.sort();
         roots.droid.sort();
         roots.goose.sort();
         roots.vibe.sort();
@@ -312,6 +319,8 @@ fn attach_auto_detected_source(roots: &mut SourceRoots, path: &Path) {
         roots.goose.push(path.to_path_buf());
     } else if s.contains(".factory") || s.contains("droid") {
         roots.droid.push(path.to_path_buf());
+    } else if s.contains(".kiro") {
+        roots.kiro.push(path.to_path_buf());
     } else if s.contains("aside") {
         roots.aside.push(path.to_path_buf());
     } else if s.contains("hermes") {

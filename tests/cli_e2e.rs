@@ -1789,3 +1789,128 @@ fn cli_end_to_end_droid_source() {
             .contains("DROID_E2E_TOOLCALL_NEVER_INDEX")
     );
 }
+
+/// Kiro CLI (V3 `sess_*` dirs and V2 `cli/*.jsonl`) through real minsync.
+#[test]
+fn cli_end_to_end_kiro_source() {
+    if !minsync_available() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().join("wombat-data");
+    let home = tmp.path().join("kiro");
+    let sd = home.join("sessions/abc123/sess_kiro-e2e-1");
+    std::fs::create_dir_all(&sd).unwrap();
+    std::fs::write(
+        sd.join("session.json"),
+        json!({"id": "sess_kiro-e2e-1", "title": "kiro chat", "workspacePaths": ["/Users/a/proj"], "createdAt": "2026-11-16T09:35:34.858Z", "lastModifiedAt": "2026-11-16T09:36:15.354Z"}).to_string(),
+    )
+    .unwrap();
+    let rec = |id: &str, p: Value| json!({"id": id, "timestamp": "2026-11-16T09:35:40.123Z", "payload": p});
+    let lines = [
+        rec(
+            "n",
+            json!({"type": "agent_note", "content": "<session_context>KIRO_E2E_AGENTNOTE_NEVER_INDEX</session_context>"}),
+        ),
+        rec(
+            "u",
+            json!({"type": "user", "content": "kiro_zephyr_probe 설명해줘"}),
+        ),
+        rec(
+            "c",
+            json!({"type": "tool_call", "toolCallId": "t", "toolName": "read_file", "args": {"path": "KIRO_E2E_TOOLCALL_NEVER_INDEX"}}),
+        ),
+        rec(
+            "r",
+            json!({"type": "tool_result", "toolCallId": "t", "content": "KIRO_E2E_TOOLRESULT_NEVER_INDEX"}),
+        ),
+        rec(
+            "k",
+            json!({"type": "assistant", "content": "...", "operationType": "Reasoning", "reasoningSignature": "KIRO_E2E_REASONING_NEVER_INDEX"}),
+        ),
+        rec(
+            "a",
+            json!({"type": "assistant", "content": "kiro_zephyr_probe는 검증용 용어입니다.", "operationType": "Say"}),
+        ),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(sd.join("messages.jsonl"), body).unwrap();
+
+    let v2 = home.join("sessions/cli");
+    std::fs::create_dir_all(&v2).unwrap();
+    std::fs::write(
+        v2.join("kiro-e2e-v2.json"),
+        json!({"session_id": "kiro-e2e-v2", "cwd": "/Users/a/proj2", "created_at": "2026-11-16T09:40:18.150381Z", "updated_at": "2026-11-16T09:40:22.524922Z", "title": "v2 chat"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        v2.join("kiro-e2e-v2.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"version": "v1", "kind": "Prompt", "data": {"message_id": "m1", "content": [{"kind": "text", "data": "kiro_v2_marker 질문"}]}}),
+            json!({"version": "v1", "kind": "AssistantMessage", "data": {"message_id": "m2", "content": [{"kind": "thinking", "data": {"text": "KIRO_E2E_V2THINKING_NEVER_INDEX"}}, {"kind": "text", "data": "kiro_v2_marker 답변"}]}}),
+        ),
+    )
+    .unwrap();
+
+    let args = [
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--embedder",
+        "none",
+        "--source",
+        &format!("kiro={}", home.display()),
+    ];
+    let run = |extra: &[&str]| -> Vec<u8> {
+        wombat_cmd()
+            .args(args)
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let sync: Value = serde_json::from_slice(&run(&["sync", "--index", "--json"])).unwrap();
+    assert_eq!(sync["total_sessions"], 2);
+    assert_eq!(sync["total_messages"], 4);
+    let search = |q: &str| -> Vec<Value> {
+        serde_json::from_slice(&run(&["search", "keyword", q, "--agent", "kiro", "--json"]))
+            .unwrap()
+    };
+    let hits = search("kiro_zephyr_probe");
+    assert_eq!(hits[0]["agent"], "kiro");
+    assert_eq!(hits[0]["session_id"], "sess_kiro-e2e-1");
+    assert_eq!(hits[0]["title"], "kiro chat");
+    assert_eq!(search("kiro_v2_marker")[0]["session_id"], "kiro-e2e-v2");
+    for noise in [
+        "KIRO_E2E_AGENTNOTE_NEVER_INDEX",
+        "KIRO_E2E_TOOLCALL_NEVER_INDEX",
+        "KIRO_E2E_TOOLRESULT_NEVER_INDEX",
+        "KIRO_E2E_REASONING_NEVER_INDEX",
+        "KIRO_E2E_V2THINKING_NEVER_INDEX",
+    ] {
+        assert!(
+            search(noise)
+                .iter()
+                .all(|h| !h["content"].as_str().unwrap().contains(noise)),
+            "{noise} was indexed"
+        );
+    }
+    let trace: Value = serde_json::from_slice(&run(&[
+        "trace",
+        "kiro:sess_kiro-e2e-1",
+        "--turn",
+        "2",
+        "--context",
+        "4",
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        trace["raw_trace"]
+            .as_str()
+            .unwrap()
+            .contains("KIRO_E2E_TOOLCALL_NEVER_INDEX")
+    );
+}

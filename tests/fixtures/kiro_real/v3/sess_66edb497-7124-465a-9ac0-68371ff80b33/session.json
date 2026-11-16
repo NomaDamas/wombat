@@ -1,0 +1,80 @@
+{
+ "schemaVersion": "1.0.0",
+ "dataModelVersion": 1,
+ "id": "sess_66edb497-7124-465a-9ac0-68371ff80b33",
+ "title": "qa_kiro_alpha 설명하기",
+ "agentMode": "vibe",
+ "workspacePaths": [
+  "/Users/jeffrey/wombat-qa/kiro/proj"
+ ],
+ "rootPaths": [
+  "/Users/jeffrey/wombat-qa/kiro/proj"
+ ],
+ "createdAt": "2026-11-16T09:35:34.858Z",
+ "lastModifiedAt": "2026-11-16T09:39:50.154Z",
+ "modelId": "auto",
+ "autopilot": true,
+ "workflowLaunch": "when-asked",
+ "contextSnapshotModelDisplay": {
+  "modelId": "auto",
+  "display": "Auto (model selected dynamically on the server)"
+ },
+ "semanticReviewEnabled": true,
+ "disableAutoCompaction": false,
+ "ftaEnabled": false,
+ "workflowsEnabled": false,
+ "universalBackgroundTool": false,
+ "specPlanEnabled": false,
+ "specWorkflow": "quick",
+ "specSkipClarificationEnabled": true,
+ "memoryConfig": {
+  "mode": "disabled",
+  "reflection": false
+ },
+ "memoryConfigSource": "explicit",
+ "status": "idle",
+ "_meta": {
+  "kiro": {
+   "settings": {
+    "sessionRecap": {
+     "enabled": false
+    },
+    "workflows": {
+     "enabled": false
+    },
+    "goal": {
+     "enabled": false
+    },
+    "codeIntelligence": {
+     "enabled": true
+    },
+    "knowledge": {
+     "enabled": true
+    },
+    "thinking": {
+     "enabled": true
+    },
+    "largeToolOutputHandler": {
+     "enabled": true
+    },
+    "workflowNotifications": {
+     "enabled": false,
+     "delivery": "steer"
+    },
+    "universalBackgroundTool": {
+     "enabled": false
+    },
+    "memory": {
+     "mode": "disabled",
+     "reflection": false
+    },
+    "userMemoryOptIn": {
+     "enabled": false
+    }
+   },
+   "executionTarget": {
+    "kind": "local"
+   }
+  }
+ }
+}
