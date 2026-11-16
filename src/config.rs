@@ -4,9 +4,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_EMBEDDER: &str = "native:Qwen/Qwen3-Embedding-0.6B";
-pub const DEFAULT_CHUNKER: &str = "auto";
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileConfig {
     pub data_dir: Option<PathBuf>,
@@ -74,9 +71,9 @@ pub struct RuntimeConfig {
     pub stage_state_dir: PathBuf,
     pub catalog_path: PathBuf,
     pub minsync_binary: String,
-    pub embedder: String,
+    pub embedder: Option<String>,
     pub embed_base_url: Option<String>,
-    pub chunker: String,
+    pub chunker: Option<String>,
     pub max_chunk_size: Option<usize>,
     pub include_subagents: bool,
     pub include_ephemeral: bool,
@@ -129,16 +126,14 @@ impl RuntimeConfig {
         let embedder = overrides
             .embedder
             .or_else(|| non_empty_env("WOMBAT_EMBEDDER"))
-            .or(file_cfg.embedder)
-            .unwrap_or_else(|| DEFAULT_EMBEDDER.to_string());
+            .or(file_cfg.embedder);
 
         let embed_base_url = non_empty_env("WOMBAT_EMBED_BASE_URL").or(file_cfg.embed_base_url);
 
         let chunker = overrides
             .chunker
             .or_else(|| non_empty_env("WOMBAT_CHUNKER"))
-            .or(file_cfg.chunker)
-            .unwrap_or_else(|| DEFAULT_CHUNKER.to_string());
+            .or(file_cfg.chunker);
 
         let include_subagents = overrides.include_subagents || file_cfg.include_subagents;
         let include_ephemeral = overrides.include_ephemeral || file_cfg.include_ephemeral;

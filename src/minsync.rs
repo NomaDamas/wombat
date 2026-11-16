@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-pub const MIN_REQUIRED_VERSION: (u32, u32, u32) = (0, 6, 0);
+pub const MIN_REQUIRED_VERSION: (u32, u32, u32) = (0, 7, 3);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemVer {
@@ -52,8 +52,10 @@ pub struct MinSyncConfig {
     pub binary: String,
     pub mirror_dir: PathBuf,
     pub stage_state_dir: PathBuf,
-    pub embedder: String,
-    pub chunker: String,
+    /// `None` lets `minsync init` use its own default embedder.
+    pub embedder: Option<String>,
+    /// `None` lets `minsync init` use its own default chunker.
+    pub chunker: Option<String>,
     pub max_chunk_size: Option<usize>,
     pub embed_base_url: Option<String>,
 }
@@ -65,7 +67,7 @@ impl MinSyncConfig {
             .output()
             .with_context(|| {
                 format!(
-                    "failed to invoke minsync binary {:?} (install minsync >= 0.6.0)",
+                    "failed to invoke minsync binary {:?} (install minsync >= 0.7.3)",
                     self.binary
                 )
             })?;
@@ -80,7 +82,7 @@ impl MinSyncConfig {
         let ver = SemVer::parse(&stdout)?;
         if !ver.meets_minimum() {
             bail!(
-                "minsync >= 0.6.0 is required, found {} ({})",
+                "minsync >= 0.7.3 is required, found {} ({})",
                 ver.raw,
                 self.binary
             );
@@ -98,32 +100,18 @@ impl MinSyncConfig {
             return Ok(false);
         }
 
-        let ver = self.check_version()?;
-        // minsync 0.7+ provides `line-cdc`; 0.6.0 provides `cdc` (FastCDC).
-        let effective_chunker = if self.chunker == "auto" {
-            if (ver.major, ver.minor) >= (0, 7) {
-                "line-cdc"
-            } else {
-                "cdc"
-            }
-        } else {
-            self.chunker.as_str()
-        };
+        self.check_version()?;
 
-        let output = Command::new(&self.binary)
-            .current_dir(&self.mirror_dir)
-            .args([
-                "init",
-                "--embedder",
-                &self.embedder,
-                "--chunker",
-                effective_chunker,
-                "--format",
-                "json",
-                "--quiet",
-            ])
-            .output()
-            .context("failed to run `minsync init`")?;
+        let mut cmd = Command::new(&self.binary);
+        cmd.current_dir(&self.mirror_dir).arg("init");
+        if let Some(embedder) = self.embedder.as_deref() {
+            cmd.args(["--embedder", embedder]);
+        }
+        if let Some(chunker) = self.chunker.as_deref() {
+            cmd.args(["--chunker", chunker]);
+        }
+        cmd.args(["--format", "json", "--quiet"]);
+        let output = cmd.output().context("failed to run `minsync init`")?;
         if !output.status.success() {
             bail!(
                 "minsync init failed ({}): {}",
@@ -272,10 +260,9 @@ impl MinSyncConfig {
         }
     }
 
-    pub fn is_sparse_only_workspace(&self) -> bool {
-        if self.embedder.trim().eq_ignore_ascii_case("none") {
-            return true;
-        }
+    /// Embedder id recorded by `minsync init` in the workspace config; falls back to the
+    /// configured override, or `None` when neither is known yet.
+    pub fn effective_embedder(&self) -> Option<String> {
         let cfg_path = self.mirror_dir.join(".minsync").join("config.toml");
         if let Ok(raw) = std::fs::read_to_string(cfg_path)
             && let Ok(doc) = toml::from_str::<toml::Value>(&raw)
@@ -284,9 +271,14 @@ impl MinSyncConfig {
                 .and_then(|e| e.get("id"))
                 .and_then(|v| v.as_str())
         {
-            return id.trim().eq_ignore_ascii_case("none");
+            return Some(id.trim().to_string());
         }
-        false
+        self.embedder.clone()
+    }
+
+    pub fn is_sparse_only_workspace(&self) -> bool {
+        self.effective_embedder()
+            .is_some_and(|id| id.eq_ignore_ascii_case("none"))
     }
 
     pub fn open_stage_session(&self) -> Result<StageSession> {
