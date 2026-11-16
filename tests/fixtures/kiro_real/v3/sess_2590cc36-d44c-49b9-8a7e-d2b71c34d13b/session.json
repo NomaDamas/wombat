@@ -1,0 +1,51 @@
+{
+ "schemaVersion": "1.0.0",
+ "dataModelVersion": 1,
+ "id": "sess_2590cc36-d44c-49b9-8a7e-d2b71c34d13b",
+ "title": "README.md 줄 수 세기 서브에이전트로",
+ "agentMode": "vibe",
+ "workspacePaths": [
+  "/Users/jeffrey/wombat-qa/kiro/proj"
+ ],
+ "rootPaths": [
+  "/Users/jeffrey/wombat-qa/kiro/proj"
+ ],
+ "createdAt": "2026-11-16T09:40:52.167Z",
+ "lastModifiedAt": "2026-11-16T09:41:15.097Z",
+ "modelId": "auto",
+ "workflowLaunch": "when-asked",
+ "contextSnapshotModelDisplay": {
+  "modelId": "auto",
+  "display": "Auto (model selected dynamically on the server)"
+ },
+ "semanticReviewEnabled": true,
+ "disableAutoCompaction": false,
+ "ftaEnabled": false,
+ "workflowsEnabled": false,
+ "specPlanEnabled": false,
+ "specWorkflow": "quick",
+ "specSkipClarificationEnabled": true,
+ "memoryConfig": {
+  "mode": "disabled",
+  "reflection": false
+ },
+ "memoryConfigSource": "explicit",
+ "status": "idle",
+ "_meta": {
+  "kiro": {
+   "settings": {
+    "memory": {
+     "mode": "disabled",
+     "reflection": false
+    },
+    "workflows": {
+     "enabled": false
+    },
+    "goal": {
+     "enabled": false
+    }
+   },
+   "nonInteractive": true
+  }
+ }
+}

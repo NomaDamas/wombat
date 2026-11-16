@@ -3421,3 +3421,281 @@ fn droid_roots_accept_factory_home_sessions_dir_or_project_dir() {
         );
     }
 }
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    for e in walkdir::WalkDir::new(src)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+    {
+        let rel = e.path().strip_prefix(src).unwrap();
+        std::fs::create_dir_all(dst.join(rel).parent().unwrap()).unwrap();
+        std::fs::copy(e.path(), dst.join(rel)).unwrap();
+    }
+}
+
+fn kiro_home_with_real_fixtures() -> TempDir {
+    // Layout copied from real Kiro CLI 3.3.0 runs: V3 sessions at sessions/<workspace-hash>/sess_<id>/,
+    // V2 sessions at sessions/cli/<id>.{json,jsonl}.
+    let dir = TempDir::new().unwrap();
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kiro_real");
+    copy_dir_all(
+        &fx.join("v3"),
+        &dir.path().join("sessions/da90243328771e7f"),
+    );
+    copy_dir_all(&fx.join("v2"), &dir.path().join("sessions/cli"));
+    dir
+}
+
+#[test]
+fn kiro_real_v3_session_keeps_only_typed_prompts_and_say_text() {
+    let dir = kiro_home_with_real_fixtures();
+    let roots = SourceRoots {
+        kiro: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_subagents: false,
+        include_ephemeral: true, // scratch dirs may live under temp
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    // main V3 session + the V3 parent-of-subagent session + the V2 session (sub-execution files
+    // and the V2 *.json metadata are not candidates)
+    assert_eq!(
+        cands.len(),
+        3,
+        "{:?}",
+        cands.iter().map(|c| &c.source_path).collect::<Vec<_>>()
+    );
+    let main = cands
+        .iter()
+        .find(|c| c.source_path.contains("sess_66edb497"))
+        .expect("main v3 session");
+    let ParseOutcome::Session(s) = parse_candidate(main, &opts).unwrap() else {
+        panic!("expected kiro session");
+    };
+    assert_eq!(s.agent, AgentKind::Kiro);
+    assert_eq!(s.session_id, "sess_66edb497-7124-465a-9ac0-68371ff80b33");
+    assert_eq!(s.cwd.as_deref(), Some("/Users/jeffrey/wombat-qa/kiro/proj"));
+    assert_eq!(s.title.as_deref(), Some("qa_kiro_alpha 설명하기"));
+    assert_eq!(s.started_at.as_deref(), Some("2026-11-16T09:35:34.858Z"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(got.len(), 6, "{got:?}");
+    assert_eq!(
+        got[0],
+        (
+            Role::User,
+            "qa_kiro_alpha 라는 단어를 한 문장으로 설명해줘. 도구는 쓰지 마."
+        )
+    );
+    assert_eq!(got[1].0, Role::Assistant);
+    assert!(got[1].1.contains("qa_kiro_alpha"));
+    assert_eq!(
+        got[2],
+        (
+            Role::User,
+            "qa_kiro_beta: 현재 폴더의 README.md 파일을 읽고 첫 줄을 알려줘."
+        )
+    );
+    assert_eq!(
+        got[3],
+        (Role::Assistant, "README.md의 첫 줄은 `# kiro qa` 입니다.")
+    );
+    assert_eq!(got[4].0, Role::User);
+    assert_eq!(got[5], (Role::Assistant, "qa_kiro_alpha, qa_kiro_beta"));
+    let mirror = render_mirror(&s).content;
+    for noise in [
+        "<session_context>",
+        "reasoningSignature",
+        "KTR~~",
+        "usage_summary",
+        "session_pause",
+        "read_file",
+    ] {
+        assert!(!mirror.contains(noise), "{noise} leaked into the mirror");
+    }
+    // The "..." placeholder text of Reasoning records must never become a turn.
+    assert!(s.turns.iter().all(|t| t.text != "..."));
+    // Trace for the reply after the real read_file tool call includes that tool_call/tool_result.
+    // Line-based traces return the turn's own record plus `--context` lines; the tool call and
+    // its result sit on the 4 lines before the final Say.
+    let raw = extract_raw_trace(
+        AgentKind::Kiro,
+        &s.source_path,
+        &s.turns[3].source_offset,
+        4,
+    )
+    .unwrap();
+    assert!(
+        raw.contains("read_file") && raw.contains("tool_result"),
+        "{raw}"
+    );
+    assert!(raw.contains("# kiro qa"));
+}
+
+#[test]
+fn kiro_real_v3_subagent_session_excludes_subagent_records_but_keeps_its_own_dialogue() {
+    let dir = kiro_home_with_real_fixtures();
+    let roots = SourceRoots {
+        kiro: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_subagents: false,
+        include_ephemeral: true,
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    let c = cands
+        .iter()
+        .find(|c| c.source_path.contains("sess_2590cc36"))
+        .unwrap();
+    let ParseOutcome::Session(s) = parse_candidate(c, &opts).unwrap() else {
+        panic!("expected kiro session");
+    };
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    // user prompt, the Say before the subagent ran, and the final Say after it completed
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(got[0].0, Role::User);
+    assert_eq!(got[1].0, Role::Assistant);
+    assert_eq!(got[2].0, Role::Assistant);
+    assert!(got[2].1.contains("2줄"));
+    let mirror = render_mirror(&s).content;
+    // the subagent's *own* prompt/response (sub_agent_start.prompt, sub_agent_complete.response) are not dialogue
+    assert!(
+        !mirror.contains("워크스페이스 경로는"),
+        "sub_agent_start.prompt leaked"
+    );
+    assert!(
+        !mirror.contains("execute_bash"),
+        "subagent tool call leaked"
+    );
+}
+
+#[test]
+fn kiro_real_v2_session_reads_prompt_and_assistant_text_and_drops_thinking() {
+    let dir = kiro_home_with_real_fixtures();
+    let roots = SourceRoots {
+        kiro: vec![dir.path().to_path_buf()],
+        ..Default::default()
+    };
+    let opts = ParseOptions {
+        include_subagents: false,
+        include_ephemeral: true,
+    };
+    let cands = discover_all(&roots, None, &opts).unwrap();
+    let c = cands
+        .iter()
+        .find(|c| c.source_path.contains("a9b02860"))
+        .expect("v2 session");
+    let ParseOutcome::Session(s) = parse_candidate(c, &opts).unwrap() else {
+        panic!("expected kiro v2 session");
+    };
+    assert_eq!(s.session_id, "a9b02860-7835-4c72-864a-2c5154bfe79b");
+    assert_eq!(s.cwd.as_deref(), Some("/Users/jeffrey/wombat-qa/kiro/proj"));
+    let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert_eq!(
+        got[0],
+        (
+            Role::User,
+            "qa_kiro_v2: 한 단어로 대답해: 안녕. 도구 쓰지 마."
+        )
+    );
+    assert_eq!(got[1], (Role::Assistant, "안녕!"));
+    assert_eq!(got[2].0, Role::User);
+    assert_eq!(got[3].0, Role::Assistant);
+    // `session_created_reason: "subagent"` is what `--no-interactive` runs record; it is not a
+    // reliable subagent marker, so these sessions are still indexed by default.
+    assert!(!s.is_subagent);
+    let raw = extract_raw_trace(
+        AgentKind::Kiro,
+        &s.source_path,
+        &s.turns[1].source_offset,
+        0,
+    )
+    .unwrap();
+    assert!(raw.contains("AssistantMessage"));
+}
+
+#[test]
+fn kiro_skips_ephemeral_workspaces_and_inactive_noise_and_roots_accept_all_levels() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().join("sessions/abc123");
+    let sess = |id: &str, cwd: &str, rows: Vec<serde_json::Value>| {
+        let d = ws.join(id);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("session.json"),
+            json!({"id": id, "title": format!("title {id}"), "workspacePaths": [cwd], "rootPaths": [cwd], "createdAt": "2026-11-16T09:35:34.858Z", "lastModifiedAt": "2026-11-16T09:36:15.354Z"}).to_string(),
+        )
+        .unwrap();
+        write_jsonl_lines(&d.join("messages.jsonl"), &rows);
+    };
+    let rec = |id: &str, payload: serde_json::Value| json!({"id": id, "timestamp": "2026-11-16T09:35:40.123Z", "payload": payload});
+    let rows = |q: &str, a: &str| {
+        vec![
+            rec("u", json!({"type": "user", "content": q})),
+            rec(
+                "tool-call",
+                json!({"type": "tool_call", "toolCallId": "t", "toolName": "KIRO_TOOLCALL_NOISE", "args": {}}),
+            ),
+            rec(
+                "tool-result",
+                json!({"type": "tool_result", "toolCallId": "t", "content": "KIRO_TOOLRESULT_NOISE"}),
+            ),
+            rec(
+                "r",
+                json!({"type": "assistant", "content": "...", "operationType": "Reasoning", "reasoningSignature": "KIRO_REASONING_NOISE"}),
+            ),
+            rec(
+                "a",
+                json!({"type": "assistant", "content": a, "operationType": "Say"}),
+            ),
+            rec(
+                "n",
+                json!({"type": "agent_note", "content": "KIRO_AGENTNOTE_NOISE"}),
+            ),
+        ]
+    };
+    sess("sess_real", "/Users/a/proj", rows("kiro_q1", "kiro_a1"));
+    sess("sess_tmp", "/tmp/scratch", rows("tmp q", "tmp a"));
+    let roots_for = |root: std::path::PathBuf| SourceRoots {
+        kiro: vec![root],
+        ..Default::default()
+    };
+    let opts = ParseOptions::default();
+    for root in [
+        dir.path().to_path_buf(),
+        dir.path().join("sessions"),
+        ws.clone(),
+        ws.join("sess_real"),
+    ] {
+        let cands = discover_all(&roots_for(root.clone()), None, &opts).unwrap();
+        let parsed: Vec<_> = cands
+            .iter()
+            .filter_map(|c| match parse_candidate(c, &opts).unwrap() {
+                ParseOutcome::Session(s) => Some(s),
+                ParseOutcome::Skipped { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            parsed.len(),
+            1,
+            "root {}: tmp-cwd session must be skipped",
+            root.display()
+        );
+        let s = &parsed[0];
+        assert_eq!(s.session_id, "sess_real");
+        let got: Vec<_> = s.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
+        assert_eq!(got, [(Role::User, "kiro_q1"), (Role::Assistant, "kiro_a1")]);
+        let mirror = render_mirror(s).content;
+        for n in [
+            "KIRO_TOOLCALL_NOISE",
+            "KIRO_TOOLRESULT_NOISE",
+            "KIRO_REASONING_NOISE",
+            "KIRO_AGENTNOTE_NOISE",
+        ] {
+            assert!(!mirror.contains(n), "{n} leaked");
+        }
+    }
+}
