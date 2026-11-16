@@ -25,15 +25,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
-    /// Path to external `minsync` binary (>= 0.6.0)
+    /// Path to external `minsync` binary (>= 0.7.3)
     #[arg(long, global = true)]
     pub minsync_bin: Option<String>,
 
-    /// Dense embedder id passed to `minsync init` (`native:Qwen/Qwen3-Embedding-0.6B`, `none` for SPLADE-only)
+    /// Dense embedder id passed to `minsync init` (default: minsync's own default; `none` for SPLADE-only)
     #[arg(long, global = true)]
     pub embedder: Option<String>,
 
-    /// Chunker id passed to `minsync init` (`auto` -> `line-cdc` on 0.7+ else `cdc`)
+    /// Chunker id passed to `minsync init` (default: minsync's own default)
     #[arg(long, global = true)]
     pub chunker: Option<String>,
 
@@ -59,7 +59,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Verify `minsync >= 0.6.0` health and inspect wombat index freshness
+    /// Verify `minsync >= 0.7.3` health and inspect wombat index freshness
     Doctor,
 
     /// Incrementally parse coding-agent sessions into the prefix-stable mirror directory

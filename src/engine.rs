@@ -171,7 +171,10 @@ pub fn run_doctor(cfg: &RuntimeConfig) -> Result<DoctorReport> {
         minsync_version: semver.raw,
         data_dir: cfg.data_dir.to_string_lossy().into_owned(),
         mirror_dir: cfg.mirror_dir.to_string_lossy().into_owned(),
-        embedder: cfg.embedder.clone(),
+        embedder: cfg
+            .minsync_config()
+            .effective_embedder()
+            .unwrap_or_else(|| "minsync default (not initialized)".to_string()),
         freshness: FreshnessSummary {
             indexed_sessions,
             indexed_turns,

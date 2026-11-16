@@ -200,11 +200,11 @@ fn catalog_persists_sessions_turns_and_chunks() {
 }
 
 #[test]
-fn semver_enforces_minsync_0_6_0_floor() {
+fn semver_enforces_minsync_0_7_3_floor() {
     assert!(!SemVer::parse("minsync 0.4.11\n").unwrap().meets_minimum());
     assert!(!SemVer::parse("minsync 0.5.9").unwrap().meets_minimum());
-    assert!(SemVer::parse("minsync 0.6.0\n").unwrap().meets_minimum());
-    assert!(SemVer::parse("minsync 0.7.0").unwrap().meets_minimum());
+    assert!(!SemVer::parse("minsync 0.7.2\n").unwrap().meets_minimum());
+    assert!(SemVer::parse("minsync 0.7.3").unwrap().meets_minimum());
     assert!(SemVer::parse("1.0.0").unwrap().meets_minimum());
 }
 
@@ -229,8 +229,8 @@ fn minsync_stage_and_sparse_incremental_sync_roundtrip() {
         binary: "minsync".to_string(),
         mirror_dir: mirror_dir.clone(),
         stage_state_dir: stage_dir,
-        embedder: "none".to_string(),
-        chunker: "cdc".to_string(),
+        embedder: Some("none".to_string()),
+        chunker: None,
         max_chunk_size: Some(512),
         embed_base_url: None,
     };
