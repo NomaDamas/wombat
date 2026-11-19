@@ -43,7 +43,26 @@ executable is `wombat`.
 ## Requirements
 
 - Rust `1.88+` (only to build from source)
-- `minsync >= 0.7.3` on `PATH` (or `--minsync-bin <path>` / `WOMBAT_MINSYNC_BIN`)
+- `minsync >= 0.7.3` on `PATH` (or `--minsync-bin <path>` / `WOMBAT_MINSYNC_BIN`).
+  Wombat shells out to it; the `minsync` crate is never linked.
+
+## Shared model runtime (im-not-llm)
+
+Wombat performs no inference and caches no model: the dense
+`Qwen/Qwen3-Embedding-0.6B` embedder and the `KURE-Sparse-nano` SPLADE encoder are
+[im-not-llm](https://github.com/NomaDamas/im-not-llm)'s engines, and the `minsync`
+child Wombat spawns does the work. That runtime is shared with the central `inl` daemon:
+
+- **Model cache** — MinSync loads weights from im-not-llm's shared root,
+  `~/.cache/im-not-llm/models` (`%LOCALAPPDATA%\im-not-llm\models` on Windows;
+  `INL_CACHE_DIR` overrides it); there is no separate `minsync` weight cache.
+- **Shared daemon** — the loopback embedding server is **`inl serve`**. For the same
+  `(kind, model)`, a running `inl serve` (or a `minsync serve`) is discovered and
+  adopted by MinSync, so `wombat sync --index` / `wombat search` reuse the resident
+  model instead of loading a second copy.
+- **Environment** — Wombat spawns `minsync` with the inherited environment, so `HOME`
+  and `INL_CACHE_DIR` reach that child unchanged and it resolves the same daemon and
+  weights as every other im-not-llm consumer.
 
 ## CLI Usage
 
@@ -83,7 +102,7 @@ wombat chunk parent <chunk_id> --json
 | `WOMBAT_CONFIG` | Path to `config.toml` (default `~/.config/wombat/config.toml`) |
 | `WOMBAT_MINSYNC_BIN` | Path to external `minsync` binary (`>= 0.7.3`) |
 | `WOMBAT_EMBEDDER` | Optional MinSync dense embedder id passed to `minsync init` (unset = minsync default; `none` for SPLADE-only) |
-| `WOMBAT_EMBED_BASE_URL` | Optional shared loopback embedding endpoint (`minsync serve`) |
+| `WOMBAT_EMBED_BASE_URL` | Optional loopback embedding endpoint written to the workspace `embedder.base_url`; used by `tei:`/`openai:` embedder ids. Native (`inl`) embedders ignore it and adopt a running `inl serve` automatically |
 | `WOMBAT_CHUNKER` | Optional chunker id passed to `minsync init` (unset = minsync default) |
 
 ## Releasing

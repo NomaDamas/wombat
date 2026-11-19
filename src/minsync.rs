@@ -47,6 +47,10 @@ impl SemVer {
     }
 }
 
+/// External `minsync` CLI invocation settings. Every child is spawned with the
+/// inherited environment: MinSync resolves the central im-not-llm runtime
+/// (weight cache and a running `inl serve`) from `HOME` / `INL_CACHE_DIR`, so
+/// never `env_clear()` these.
 #[derive(Debug, Clone)]
 pub struct MinSyncConfig {
     pub binary: String,
