@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-pub const MIN_REQUIRED_VERSION: (u32, u32, u32) = (0, 7, 3);
+pub const MIN_REQUIRED_VERSION: (u32, u32, u32) = (0, 7, 5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemVer {
@@ -47,6 +47,10 @@ impl SemVer {
     }
 }
 
+/// External `minsync` CLI invocation settings. Every child is spawned with the
+/// inherited environment: MinSync resolves the central im-not-llm runtime
+/// (weight cache and a running `inl serve`) from `HOME` / `INL_CACHE_DIR`, so
+/// never `env_clear()` these.
 #[derive(Debug, Clone)]
 pub struct MinSyncConfig {
     pub binary: String,
@@ -67,7 +71,7 @@ impl MinSyncConfig {
             .output()
             .with_context(|| {
                 format!(
-                    "failed to invoke minsync binary {:?} (install minsync >= 0.7.3)",
+                    "failed to invoke minsync binary {:?} (install minsync >= 0.7.5)",
                     self.binary
                 )
             })?;
@@ -82,7 +86,7 @@ impl MinSyncConfig {
         let ver = SemVer::parse(&stdout)?;
         if !ver.meets_minimum() {
             bail!(
-                "minsync >= 0.7.3 is required, found {} ({})",
+                "minsync >= 0.7.5 is required, found {} ({})",
                 ver.raw,
                 self.binary
             );
