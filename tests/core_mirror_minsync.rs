@@ -200,11 +200,12 @@ fn catalog_persists_sessions_turns_and_chunks() {
 }
 
 #[test]
-fn semver_enforces_minsync_0_7_3_floor() {
+fn semver_enforces_minsync_0_7_5_floor() {
     assert!(!SemVer::parse("minsync 0.4.11\n").unwrap().meets_minimum());
     assert!(!SemVer::parse("minsync 0.5.9").unwrap().meets_minimum());
     assert!(!SemVer::parse("minsync 0.7.2\n").unwrap().meets_minimum());
-    assert!(SemVer::parse("minsync 0.7.3").unwrap().meets_minimum());
+    assert!(!SemVer::parse("minsync 0.7.4").unwrap().meets_minimum());
+    assert!(SemVer::parse("minsync 0.7.5").unwrap().meets_minimum());
     assert!(SemVer::parse("1.0.0").unwrap().meets_minimum());
 }
 

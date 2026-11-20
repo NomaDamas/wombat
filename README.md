@@ -1,6 +1,6 @@
 # wombat
 
-Distill coding-agent session logs (**Codex**, **Claude Code**, **OpenCode**, **Pi**, **OMP**, **Hermes Agent**, **Aside**, **Gemini CLI**, **Kilo Code**, **Qwen Code**, **Crush**, **Copilot CLI**, **Continue CLI**, **iFlow CLI**, **CodeBuddy**, **Aider**, **Mistral Vibe**, **Goose**, **Droid**, **Kiro**) into a prefix-stable plain-text mirror directory, then index and search user–assistant dialogue via the external [`minsync`](https://github.com/NomaDamas/MinSync) CLI (`>= 0.7.3`) using **SPLADE** (`KURE-Sparse-nano`), **dense embeddings** (`Qwen/Qwen3-Embedding-0.6B`), and **incremental content-defined chunking**.
+Distill coding-agent session logs (**Codex**, **Claude Code**, **OpenCode**, **Pi**, **OMP**, **Hermes Agent**, **Aside**, **Gemini CLI**, **Kilo Code**, **Qwen Code**, **Crush**, **Copilot CLI**, **Continue CLI**, **iFlow CLI**, **CodeBuddy**, **Aider**, **Mistral Vibe**, **Goose**, **Droid**, **Kiro**) into a prefix-stable plain-text mirror directory, then index and search user–assistant dialogue via the external [`minsync`](https://github.com/NomaDamas/MinSync) CLI (`>= 0.7.5`) using **SPLADE** (`KURE-Sparse-nano`), **dense embeddings** (`Qwen/Qwen3-Embedding-0.6B`), and **incremental content-defined chunking**.
 
 Designed as an external CLI datasource for **AutoRAG**.
 
@@ -43,7 +43,7 @@ executable is `wombat`.
 ## Requirements
 
 - Rust `1.88+` (only to build from source)
-- `minsync >= 0.7.3` on `PATH` (or `--minsync-bin <path>` / `WOMBAT_MINSYNC_BIN`).
+- `minsync >= 0.7.5` on `PATH` (or `--minsync-bin <path>` / `WOMBAT_MINSYNC_BIN`).
   Wombat shells out to it; the `minsync` crate is never linked.
 
 ## Shared model runtime (im-not-llm)
@@ -67,7 +67,7 @@ child Wombat spawns does the work. That runtime is shared with the central `inl`
 ## CLI Usage
 
 ```bash
-# Check minsync >= 0.7.3 health and index freshness
+# Check minsync >= 0.7.5 health and index freshness
 wombat doctor
 wombat doctor --json
 
@@ -100,7 +100,7 @@ wombat chunk parent <chunk_id> --json
 | --- | --- |
 | `WOMBAT_DATA_DIR` | Data directory containing `mirror/`, `stage/`, and `catalog.sqlite3` (default `~/.wombat`) |
 | `WOMBAT_CONFIG` | Path to `config.toml` (default `~/.config/wombat/config.toml`) |
-| `WOMBAT_MINSYNC_BIN` | Path to external `minsync` binary (`>= 0.7.3`) |
+| `WOMBAT_MINSYNC_BIN` | Path to external `minsync` binary (`>= 0.7.5`) |
 | `WOMBAT_EMBEDDER` | Optional MinSync dense embedder id passed to `minsync init` (unset = minsync default; `none` for SPLADE-only) |
 | `WOMBAT_EMBED_BASE_URL` | Optional loopback embedding endpoint written to the workspace `embedder.base_url`; used by `tei:`/`openai:` embedder ids. Native (`inl`) embedders ignore it and adopt a running `inl serve` automatically |
 | `WOMBAT_CHUNKER` | Optional chunker id passed to `minsync init` (unset = minsync default) |

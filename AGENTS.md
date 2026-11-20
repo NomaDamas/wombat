@@ -4,7 +4,7 @@ Rust CLI that parses coding-agent session logs into a mirror directory of
 normalized text, which the `minsync` CLI indexes and searches.
 
 - MinSync is used only as an external binary (`minsync init|sync|query`); never
-  link the `minsync` crate. Require minsync >= 0.7.3.
+  link the `minsync` crate. Require minsync >= 0.7.5.
 - All model inference and the model cache belong to im-not-llm (the `inl`
   daemon) — never add in-process inference or a Wombat-owned model cache, and
   never `env_clear()` a spawned `minsync`: it needs the inherited `HOME` /

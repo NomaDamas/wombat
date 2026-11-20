@@ -25,7 +25,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
-    /// Path to external `minsync` binary (>= 0.7.3)
+    /// Path to external `minsync` binary (>= 0.7.5)
     #[arg(long, global = true)]
     pub minsync_bin: Option<String>,
 
@@ -59,7 +59,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Verify `minsync >= 0.7.3` health and inspect wombat index freshness
+    /// Verify `minsync >= 0.7.5` health and inspect wombat index freshness
     Doctor,
 
     /// Incrementally parse coding-agent sessions into the prefix-stable mirror directory
