@@ -4,6 +4,7 @@ use crate::engine::{
     SearchParams, SyncOptions, run_chunk_context, run_chunk_get, run_chunk_parent, run_doctor,
     run_index, run_search, run_show_session, run_sync, run_trace,
 };
+use crate::grep::{GrepParams, run_grep};
 use crate::minsync::QueryMode;
 use crate::model::{AgentKind, collapse_ws, truncate_chars};
 use anyhow::{Result, bail};
@@ -71,6 +72,9 @@ pub enum Commands {
     /// Search indexed sessions (`wombat search [keyword|semantic|hybrid] <query>` or `--mode`)
     Search(SearchArgs),
 
+    /// Exact keyword / regex match (ripgrep) over the parsed session mirror, no model involved
+    Grep(GrepArgs),
+
     /// List mirrored coding-agent sessions
     Sessions(SessionsArgs),
 
@@ -136,6 +140,40 @@ pub struct SearchArgs {
     pub agent: Option<String>,
 
     /// Filter hits whose session `cwd` or mirror path contains this substring
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct GrepArgs {
+    /// Pattern to match line by line (regex by default; see `--literal`)
+    pub pattern: String,
+
+    /// Treat the pattern as a literal string instead of a regex
+    #[arg(long, short = 'F')]
+    pub literal: bool,
+
+    /// Case-insensitive match
+    #[arg(long, short = 'i')]
+    pub ignore_case: bool,
+
+    /// Mirror lines of context before and after each match (max 20)
+    #[arg(long, short = 'C', default_value_t = 0)]
+    pub context: usize,
+
+    /// Maximum number of matches to return
+    #[arg(long, short = 'k', visible_alias = "top-k", default_value_t = 50)]
+    pub limit: usize,
+
+    /// Maximum matches kept from one session
+    #[arg(long, default_value_t = 20)]
+    pub max_per_file: usize,
+
+    /// Only sessions of one coding agent
+    #[arg(long)]
+    pub agent: Option<String>,
+
+    /// Only sessions whose `cwd` or mirror path contains this substring
     #[arg(long)]
     pub project: Option<String>,
 }
@@ -333,6 +371,39 @@ pub fn run(cli: Cli) -> Result<()> {
                         "   snippet: {}",
                         truncate_chars(collapse_ws(&h.snippet), 180)
                     );
+                }
+            }
+        }
+        Commands::Grep(args) => {
+            let agent_filter = match &args.agent {
+                Some(a) => Some(
+                    AgentKind::parse_name(a)
+                        .ok_or_else(|| anyhow::anyhow!("unknown agent {a:?}"))?,
+                ),
+                None => None,
+            };
+            let mut params = GrepParams::new(&args.pattern);
+            params.literal = args.literal;
+            params.ignore_case = args.ignore_case;
+            params.context = args.context;
+            params.limit = args.limit;
+            params.max_per_file = args.max_per_file;
+            params.agent_filter = agent_filter;
+            params.project_filter = args.project.as_deref();
+            let hits = run_grep(&cfg, &params)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&hits)?);
+            } else if hits.is_empty() {
+                println!("No matches found.");
+            } else {
+                for h in &hits {
+                    println!(
+                        "{} ({}) turn {} L{}",
+                        h.catalog_key, h.title, h.turn_index, h.line_number
+                    );
+                    for line in h.snippet.lines() {
+                        println!("   {line}");
+                    }
                 }
             }
         }
