@@ -1006,6 +1006,7 @@ dependencies = [
  "clap",
  "hex",
  "predicates",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
